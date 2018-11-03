@@ -23,6 +23,10 @@
 #define __ZEBRA_NS_H__
 
 #include <lib/ns.h>
+#include <lib/vrf.h>
+
+#include "zebra/rib.h"
+#include "zebra/zebra_vrf.h"
 
 #ifdef HAVE_NETLINK
 /* Socket interface to kernel */
@@ -49,17 +53,17 @@ struct zebra_ns {
 
 	struct route_table *if_table;
 
-	/* L3-VNI hash table (for EVPN). Only in default instance */
-	struct hash *l3vni_table;
-
-#if defined(HAVE_RTADV)
-	struct rtadv rtadv;
-#endif /* HAVE_RTADV */
+	/* Back pointer */
+	struct ns *ns;
 };
 
 struct zebra_ns *zebra_ns_lookup(ns_id_t ns_id);
 
 int zebra_ns_init(void);
 int zebra_ns_enable(ns_id_t ns_id, void **info);
+int zebra_ns_disabled(struct ns *ns);
 int zebra_ns_disable(ns_id_t ns_id, void **info);
+
+int zebra_ns_config_write(struct vty *vty, struct ns *ns);
+
 #endif

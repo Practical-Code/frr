@@ -90,7 +90,7 @@ route_table_delegate_t bgp_table_delegate = {.create_node = bgp_node_create,
 /*
  * bgp_table_init
  */
-struct bgp_table *bgp_table_init(afi_t afi, safi_t safi)
+struct bgp_table *bgp_table_init(struct bgp *bgp, afi_t afi, safi_t safi)
 {
 	struct bgp_table *rt;
 
@@ -101,11 +101,78 @@ struct bgp_table *bgp_table_init(afi_t afi, safi_t safi)
 	/*
 	 * Set up back pointer to bgp_table.
 	 */
-	rt->route_table->info = rt;
+	route_table_set_info(rt->route_table, rt);
+
+	/*
+	 * pointer to bgp instance allows working back from bgp_path_info to bgp
+	 */
+	rt->bgp = bgp;
 
 	bgp_table_lock(rt);
 	rt->afi = afi;
 	rt->safi = safi;
 
 	return rt;
+}
+
+static struct bgp_node *
+bgp_route_next_until_maxlen(struct bgp_node *node, const struct bgp_node *limit,
+			    const uint8_t maxlen)
+{
+	if (node->l_left && node->p.prefixlen < maxlen
+	    && node->l_left->p.prefixlen <= maxlen) {
+		return bgp_node_from_rnode(node->l_left);
+	}
+	if (node->l_right && node->p.prefixlen < maxlen
+	    && node->l_right->p.prefixlen <= maxlen) {
+		return bgp_node_from_rnode(node->l_right);
+	}
+
+	while (node->parent && node != limit) {
+		if (bgp_node_from_rnode(node->parent->l_left) == node
+		    && node->parent->l_right) {
+			return bgp_node_from_rnode(node->parent->l_right);
+		}
+		node = bgp_node_from_rnode(node->parent);
+	}
+	return NULL;
+}
+
+void bgp_table_range_lookup(const struct bgp_table *table, struct prefix *p,
+			    uint8_t maxlen, struct list *matches)
+{
+	struct bgp_node *node = bgp_node_from_rnode(table->route_table->top);
+	struct bgp_node *matched = NULL;
+
+	while (node && node->p.prefixlen <= p->prefixlen
+	       && prefix_match(&node->p, p)) {
+		if (node->info && node->p.prefixlen == p->prefixlen) {
+			matched = node;
+			break;
+		}
+		node = bgp_node_from_rnode(node->link[prefix_bit(
+			&p->u.prefix, node->p.prefixlen)]);
+	}
+
+	if (node == NULL)
+		return;
+
+	if ((matched == NULL && node->p.prefixlen > maxlen) || !node->parent)
+		return;
+	else if (matched == NULL)
+		matched = node = bgp_node_from_rnode(node->parent);
+
+	if (matched->info) {
+		bgp_lock_node(matched);
+		listnode_add(matches, matched);
+	}
+
+	while ((node = bgp_route_next_until_maxlen(node, matched, maxlen))) {
+		if (prefix_match(p, &node->p)) {
+			if (node->info) {
+				bgp_lock_node(node);
+				listnode_add(matches, node);
+			}
+		}
+	}
 }

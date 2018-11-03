@@ -142,19 +142,8 @@ void ospf_lsdb_delete(struct ospf_lsdb *lsdb, struct ospf_lsa *lsa)
 	struct prefix_ls lp;
 	struct route_node *rn;
 
-	if (!lsdb) {
-		zlog_warn("%s: Called with NULL LSDB", __func__);
-		if (lsa)
-			zlog_warn("LSA[Type%d:%s]: LSA %p, lsa->lsdb %p",
-				  lsa->data->type, inet_ntoa(lsa->data->id),
-				  (void *)lsa, (void *)lsa->lsdb);
+	if (!lsdb || !lsa)
 		return;
-	}
-
-	if (!lsa) {
-		zlog_warn("%s: Called with NULL LSA", __func__);
-		return;
-	}
 
 	assert(lsa->data->type < OSPF_MAX_LSA);
 	table = lsdb->type[lsa->data->type].db;
@@ -213,7 +202,7 @@ struct ospf_lsa *ospf_lsdb_lookup(struct ospf_lsdb *lsdb, struct ospf_lsa *lsa)
 	return NULL;
 }
 
-struct ospf_lsa *ospf_lsdb_lookup_by_id(struct ospf_lsdb *lsdb, u_char type,
+struct ospf_lsa *ospf_lsdb_lookup_by_id(struct ospf_lsdb *lsdb, uint8_t type,
 					struct in_addr id,
 					struct in_addr adv_router)
 {
@@ -240,7 +229,7 @@ struct ospf_lsa *ospf_lsdb_lookup_by_id(struct ospf_lsdb *lsdb, u_char type,
 }
 
 struct ospf_lsa *ospf_lsdb_lookup_by_id_next(struct ospf_lsdb *lsdb,
-					     u_char type, struct in_addr id,
+					     uint8_t type, struct in_addr id,
 					     struct in_addr adv_router,
 					     int first)
 {

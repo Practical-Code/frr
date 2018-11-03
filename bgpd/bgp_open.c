@@ -34,6 +34,7 @@
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_attr.h"
 #include "bgpd/bgp_debug.h"
+#include "bgpd/bgp_errors.h"
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_packet.h"
 #include "bgpd/bgp_open.h"
@@ -51,7 +52,7 @@
    Next, if we send capability to the peer we want to set my capabilty
    inforation at each peer. */
 
-void bgp_capability_vty_out(struct vty *vty, struct peer *peer, u_char use_json,
+void bgp_capability_vty_out(struct vty *vty, struct peer *peer, bool use_json,
 			    json_object *json_neigh)
 {
 	char *pnt;
@@ -80,8 +81,9 @@ void bgp_capability_vty_out(struct vty *vty, struct peer *peer, u_char use_json,
 			afi_t afi;
 			safi_t safi;
 
-			bgp_map_afi_safi_iana2int(ntohs(mpc.afi), mpc.safi,
-						  &afi, &safi);
+			(void)bgp_map_afi_safi_iana2int(ntohs(mpc.afi),
+							mpc.safi, &afi, &safi);
+
 			if (use_json) {
 				switch (afi) {
 				case AFI_IP:
@@ -146,6 +148,12 @@ void bgp_capability_vty_out(struct vty *vty, struct peer *peer, u_char use_json,
 						"capabilityErrorMultiProtocolSafi",
 						"EVPN");
 					break;
+				case SAFI_FLOWSPEC:
+					json_object_string_add(
+						json_cap,
+						"capabilityErrorMultiProtocolSafi",
+						"flowspec");
+					break;
 				default:
 					json_object_int_add(
 						json_cap,
@@ -186,6 +194,9 @@ void bgp_capability_vty_out(struct vty *vty, struct peer *peer, u_char use_json,
 					break;
 				case SAFI_ENCAP:
 					vty_out(vty, "SAFI ENCAP");
+					break;
+				case SAFI_FLOWSPEC:
+					vty_out(vty, "SAFI FLOWSPEC");
 					break;
 				case SAFI_EVPN:
 					vty_out(vty, "SAFI EVPN");
@@ -243,7 +254,8 @@ static int bgp_capability_mp(struct peer *peer, struct capability_header *hdr)
 
 	/* Verify length is 4 */
 	if (hdr->length != 4) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_LENGTH,
 			"MP Cap: Received invalid length %d, non-multiple of 4",
 			hdr->length);
 		return -1;
@@ -271,8 +283,8 @@ static int bgp_capability_mp(struct peer *peer, struct capability_header *hdr)
 }
 
 static void bgp_capability_orf_not_support(struct peer *peer, iana_afi_t afi,
-					   iana_safi_t safi, u_char type,
-					   u_char mode)
+					   iana_safi_t safi, uint8_t type,
+					   uint8_t mode)
 {
 	if (bgp_debug_neighbor_events(peer))
 		zlog_debug(
@@ -295,15 +307,15 @@ static int bgp_capability_orf_entry(struct peer *peer,
 {
 	struct stream *s = BGP_INPUT(peer);
 	struct capability_mp_data mpc;
-	u_char num;
+	uint8_t num;
 	iana_afi_t pkt_afi;
 	afi_t afi;
 	iana_safi_t pkt_safi;
 	safi_t safi;
-	u_char type;
-	u_char mode;
-	u_int16_t sm_cap = 0; /* capability send-mode receive */
-	u_int16_t rm_cap = 0; /* capability receive-mode receive */
+	uint8_t type;
+	uint8_t mode;
+	uint16_t sm_cap = 0; /* capability send-mode receive */
+	uint16_t rm_cap = 0; /* capability receive-mode receive */
 	int i;
 
 	/* ORF Entry header */
@@ -433,12 +445,13 @@ static int bgp_capability_restart(struct peer *peer,
 				  struct capability_header *caphdr)
 {
 	struct stream *s = BGP_INPUT(peer);
-	u_int16_t restart_flag_time;
+	uint16_t restart_flag_time;
 	size_t end = stream_get_getp(s) + caphdr->length;
 
 	/* Verify length is a multiple of 4 */
 	if ((caphdr->length - 2) % 4) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_LENGTH,
 			"Restart Cap: Received invalid length %d, non-multiple of 4",
 			caphdr->length);
 		return -1;
@@ -468,7 +481,7 @@ static int bgp_capability_restart(struct peer *peer,
 		safi_t safi;
 		iana_afi_t pkt_afi = stream_getw(s);
 		iana_safi_t pkt_safi = stream_getc(s);
-		u_char flag = stream_getc(s);
+		uint8_t flag = stream_getc(s);
 
 		/* Convert AFI, SAFI to internal values, check. */
 		if (bgp_map_afi_safi_iana2int(pkt_afi, pkt_safi, &afi, &safi)) {
@@ -510,7 +523,8 @@ static as_t bgp_capability_as4(struct peer *peer, struct capability_header *hdr)
 	SET_FLAG(peer->cap, PEER_CAP_AS4_RCV);
 
 	if (hdr->length != CAPABILITY_CODE_AS4_LEN) {
-		zlog_err("%s AS4 capability has incorrect data length %d",
+		flog_err(EC_BGP_PKT_OPEN,
+			 "%s AS4 capability has incorrect data length %d",
 			 peer->host, hdr->length);
 		return 0;
 	}
@@ -534,7 +548,8 @@ static int bgp_capability_addpath(struct peer *peer,
 
 	/* Verify length is a multiple of 4 */
 	if (hdr->length % 4) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_LENGTH,
 			"Add Path: Received invalid length %d, non-multiple of 4",
 			hdr->length);
 		return -1;
@@ -545,7 +560,7 @@ static int bgp_capability_addpath(struct peer *peer,
 		safi_t safi;
 		iana_afi_t pkt_afi = stream_getw(s);
 		iana_safi_t pkt_safi = stream_getc(s);
-		u_char send_receive = stream_getc(s);
+		uint8_t send_receive = stream_getc(s);
 
 		if (bgp_debug_neighbor_events(peer))
 			zlog_debug(
@@ -592,7 +607,8 @@ static int bgp_capability_enhe(struct peer *peer, struct capability_header *hdr)
 
 	/* Verify length is a multiple of 4 */
 	if (hdr->length % 6) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_LENGTH,
 			"Extended NH: Received invalid length %d, non-multiple of 6",
 			hdr->length);
 		return -1;
@@ -634,7 +650,8 @@ static int bgp_capability_enhe(struct peer *peer, struct capability_header *hdr)
 		if (afi != AFI_IP || nh_afi != AFI_IP6
 		    || !(safi == SAFI_UNICAST
 			 || safi == SAFI_LABELED_UNICAST)) {
-			zlog_warn(
+			flog_warn(
+				EC_BGP_CAPABILITY_INVALID_DATA,
 				"%s Unexpected afi/safi/next-hop afi: %u/%u/%u "
 				"in Extended Next-hop capability, ignoring",
 				peer->host, pkt_afi, pkt_safi, pkt_nh_afi);
@@ -659,13 +676,14 @@ static int bgp_capability_hostname(struct peer *peer,
 	struct stream *s = BGP_INPUT(peer);
 	char str[BGP_MAX_HOSTNAME + 1];
 	size_t end = stream_get_getp(s) + hdr->length;
-	u_char len;
+	uint8_t len;
 
 	SET_FLAG(peer->cap, PEER_CAP_HOSTNAME_RCV);
 
 	len = stream_getc(s);
 	if (stream_get_getp(s) + len > end) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_DATA,
 			"%s: Received malformed hostname capability from peer %s",
 			__FUNCTION__, peer->host);
 		return -1;
@@ -695,7 +713,8 @@ static int bgp_capability_hostname(struct peer *peer,
 	}
 
 	if (stream_get_getp(s) + 1 > end) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_DATA,
 			"%s: Received invalid domain name len (hostname capability) from peer %s",
 			__FUNCTION__, peer->host);
 		return -1;
@@ -703,7 +722,8 @@ static int bgp_capability_hostname(struct peer *peer,
 
 	len = stream_getc(s);
 	if (stream_get_getp(s) + len > end) {
-		zlog_warn(
+		flog_warn(
+			EC_BGP_CAPABILITY_INVALID_DATA,
 			"%s: Received runt domain name (hostname capability) from peer %s",
 			__FUNCTION__, peer->host);
 		return -1;
@@ -788,7 +808,7 @@ static const size_t cap_modsizes[] = {
  *                           capabilities were encountered.
  */
 static int bgp_capability_parse(struct peer *peer, size_t length,
-				int *mp_capability, u_char **error)
+				int *mp_capability, uint8_t **error)
 {
 	int ret;
 	struct stream *s = BGP_INPUT(peer);
@@ -798,7 +818,7 @@ static int bgp_capability_parse(struct peer *peer, size_t length,
 
 	while (stream_get_getp(s) < end) {
 		size_t start;
-		u_char *sp = stream_pnt(s);
+		uint8_t *sp = stream_pnt(s);
 		struct capability_header caphdr;
 
 		ret = 0;
@@ -940,10 +960,12 @@ static int bgp_capability_parse(struct peer *peer, size_t length,
 				   specific
 				   capabilities.  It seems reasonable for now...
 				   */
-				zlog_warn("%s Vendor specific capability %d",
+				flog_warn(EC_BGP_CAPABILITY_VENDOR,
+					  "%s Vendor specific capability %d",
 					  peer->host, caphdr.code);
 			} else {
-				zlog_warn(
+				flog_warn(
+					EC_BGP_CAPABILITY_UNKNOWN,
 					"%s unrecognized capability code: %d - ignored",
 					peer->host, caphdr.code);
 				memcpy(*error, sp, caphdr.length + 2);
@@ -958,7 +980,8 @@ static int bgp_capability_parse(struct peer *peer, size_t length,
 		}
 		if (stream_get_getp(s) != (start + caphdr.length)) {
 			if (stream_get_getp(s) > (start + caphdr.length))
-				zlog_warn(
+				flog_warn(
+					EC_BGP_CAPABILITY_INVALID_LENGTH,
 					"%s Cap-parser for %s read past cap-length, %u!",
 					peer->host,
 					lookup_msg(capcode_str, caphdr.code,
@@ -991,7 +1014,7 @@ static int strict_capability_same(struct peer *peer)
 /* peek into option, stores ASN to *as4 if the AS4 capability was found.
  * Returns  0 if no as4 found, as4cap value otherwise.
  */
-as_t peek_for_as4_capability(struct peer *peer, u_char length)
+as_t peek_for_as4_capability(struct peer *peer, uint8_t length)
 {
 	struct stream *s = BGP_INPUT(peer);
 	size_t orig_getp = stream_get_getp(s);
@@ -1007,8 +1030,8 @@ as_t peek_for_as4_capability(struct peer *peer, u_char length)
 	 * correctly formatted options.
 	 */
 	while (stream_get_getp(s) < end) {
-		u_char opt_type;
-		u_char opt_length;
+		uint8_t opt_type;
+		uint8_t opt_length;
 
 		/* Check the length. */
 		if (stream_get_getp(s) + 2 > end)
@@ -1064,11 +1087,11 @@ end:
  *
  * @param[out] mp_capability @see bgp_capability_parse() for semantics.
  */
-int bgp_open_option_parse(struct peer *peer, u_char length, int *mp_capability)
+int bgp_open_option_parse(struct peer *peer, uint8_t length, int *mp_capability)
 {
 	int ret = 0;
-	u_char *error;
-	u_char error_data[BGP_MAX_PACKET_SIZE];
+	uint8_t *error;
+	uint8_t error_data[BGP_MAX_PACKET_SIZE];
 	struct stream *s = BGP_INPUT(peer);
 	size_t end = stream_get_getp(s) + length;
 
@@ -1079,8 +1102,8 @@ int bgp_open_option_parse(struct peer *peer, u_char length, int *mp_capability)
 			   peer->host, length);
 
 	while (stream_get_getp(s) < end) {
-		u_char opt_type;
-		u_char opt_length;
+		uint8_t opt_type;
+		uint8_t opt_length;
 
 		/* Must have at least an OPEN option header */
 		if (STREAM_READABLE(s) < 2) {
@@ -1166,16 +1189,18 @@ int bgp_open_option_parse(struct peer *peer, u_char length, int *mp_capability)
 		    && !peer->afc_nego[AFI_IP][SAFI_LABELED_UNICAST]
 		    && !peer->afc_nego[AFI_IP][SAFI_MPLS_VPN]
 		    && !peer->afc_nego[AFI_IP][SAFI_ENCAP]
+		    && !peer->afc_nego[AFI_IP][SAFI_FLOWSPEC]
 		    && !peer->afc_nego[AFI_IP6][SAFI_UNICAST]
 		    && !peer->afc_nego[AFI_IP6][SAFI_MULTICAST]
 		    && !peer->afc_nego[AFI_IP6][SAFI_LABELED_UNICAST]
 		    && !peer->afc_nego[AFI_IP6][SAFI_MPLS_VPN]
 		    && !peer->afc_nego[AFI_IP6][SAFI_ENCAP]
+		    && !peer->afc_nego[AFI_IP6][SAFI_FLOWSPEC]
 		    && !peer->afc_nego[AFI_L2VPN][SAFI_EVPN]) {
-			zlog_err(
-				"%s [Error] Configured AFI/SAFIs do not "
-				"overlap with received MP capabilities",
-				peer->host);
+			flog_err(EC_BGP_PKT_OPEN,
+				 "%s [Error] Configured AFI/SAFIs do not "
+				 "overlap with received MP capabilities",
+				 peer->host);
 
 			if (error != error_data)
 				bgp_notify_send_with_data(
@@ -1192,10 +1217,10 @@ int bgp_open_option_parse(struct peer *peer, u_char length, int *mp_capability)
 }
 
 static void bgp_open_capability_orf(struct stream *s, struct peer *peer,
-				    afi_t afi, safi_t safi, u_char code)
+				    afi_t afi, safi_t safi, uint8_t code)
 {
-	u_char cap_len;
-	u_char orf_len;
+	uint8_t cap_len;
+	uint8_t orf_len;
 	unsigned long capp;
 	unsigned long orfp;
 	unsigned long numberp;
@@ -1262,15 +1287,15 @@ static void bgp_open_capability_orf(struct stream *s, struct peer *peer,
 /* Fill in capability open option to the packet. */
 void bgp_open_capability(struct stream *s, struct peer *peer)
 {
-	u_char len;
+	uint8_t len;
 	unsigned long cp, capp, rcapp;
 	iana_afi_t pkt_afi;
 	afi_t afi;
 	safi_t safi;
 	iana_safi_t pkt_safi;
 	as_t local_as;
-	u_int32_t restart_time;
-	u_char afi_safi_count = 0;
+	uint32_t restart_time;
+	uint8_t afi_safi_count = 0;
 	int adv_addpath_tx = 0;
 
 	/* Remember current pointer for Opt Parm Len. */
@@ -1306,7 +1331,6 @@ void bgp_open_capability(struct stream *s, struct peer *peer)
 			 */
 			if (CHECK_FLAG(peer->flags, PEER_FLAG_CAPABILITY_ENHE)
 			    && peer->su.sa.sa_family == AF_INET6
-			    && IN6_IS_ADDR_LINKLOCAL(&peer->su.sin6.sin6_addr)
 			    && afi == AFI_IP
 			    && (safi == SAFI_UNICAST
 				|| safi == SAFI_LABELED_UNICAST)) {

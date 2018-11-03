@@ -76,16 +76,21 @@ l2vpn_del(struct l2vpn *l2vpn)
 	struct l2vpn_if		*lif;
 	struct l2vpn_pw		*pw;
 
-	while ((lif = RB_ROOT(l2vpn_if_head, &l2vpn->if_tree)) != NULL) {
+	while (!RB_EMPTY(l2vpn_if_head, &l2vpn->if_tree)) {
+		lif = RB_ROOT(l2vpn_if_head, &l2vpn->if_tree);
+
 		RB_REMOVE(l2vpn_if_head, &l2vpn->if_tree, lif);
 		free(lif);
 	}
-	while ((pw = RB_ROOT(l2vpn_pw_head, &l2vpn->pw_tree)) != NULL) {
+	while (!RB_EMPTY(l2vpn_pw_head, &l2vpn->pw_tree)) {
+		pw = RB_ROOT(l2vpn_pw_head, &l2vpn->pw_tree);
+
 		RB_REMOVE(l2vpn_pw_head, &l2vpn->pw_tree, pw);
 		free(pw);
 	}
-	while ((pw = RB_ROOT(l2vpn_pw_head,
-	    &l2vpn->pw_inactive_tree)) != NULL) {
+	while (!RB_EMPTY(l2vpn_pw_head, &l2vpn->pw_inactive_tree)) {
+		pw = RB_ROOT(l2vpn_pw_head, &l2vpn->pw_inactive_tree);
+
 		RB_REMOVE(l2vpn_pw_head, &l2vpn->pw_inactive_tree, pw);
 		free(pw);
 	}
@@ -114,7 +119,7 @@ l2vpn_exit(struct l2vpn *l2vpn)
 static __inline int
 l2vpn_if_compare(const struct l2vpn_if *a, const struct l2vpn_if *b)
 {
-	return (if_cmp_name_func((char *)a->ifname, (char *)b->ifname));
+	return if_cmp_name_func(a->ifname, b->ifname);
 }
 
 struct l2vpn_if *
@@ -177,7 +182,7 @@ l2vpn_if_update(struct l2vpn_if *lif)
 static __inline int
 l2vpn_pw_compare(const struct l2vpn_pw *a, const struct l2vpn_pw *b)
 {
-	return (if_cmp_name_func((char *)a->ifname, (char *)b->ifname));
+	return if_cmp_name_func(a->ifname, b->ifname);
 }
 
 struct l2vpn_pw *

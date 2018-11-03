@@ -47,10 +47,12 @@
 #include "isisd/isis_spf.h"
 #include "isisd/isis_events.h"
 #include "isisd/isis_mt.h"
+#include "isisd/isis_tlvs.h"
+#include "isisd/fabricd.h"
 
 extern struct isis *isis;
 
-static struct isis_adjacency *adj_alloc(const u_char *id)
+static struct isis_adjacency *adj_alloc(const uint8_t *id)
 {
 	struct isis_adjacency *adj;
 
@@ -60,7 +62,7 @@ static struct isis_adjacency *adj_alloc(const u_char *id)
 	return adj;
 }
 
-struct isis_adjacency *isis_new_adj(const u_char *id, const u_char *snpa,
+struct isis_adjacency *isis_new_adj(const uint8_t *id, const uint8_t *snpa,
 				    int level, struct isis_circuit *circuit)
 {
 	struct isis_adjacency *adj;
@@ -78,6 +80,7 @@ struct isis_adjacency *isis_new_adj(const u_char *id, const u_char *snpa,
 	adj->level = level;
 	adj->flaps = 0;
 	adj->last_flap = time(NULL);
+	adj->threeway_state = ISIS_THREEWAY_DOWN;
 	if (circuit->circ_type == CIRCUIT_T_BROADCAST) {
 		listnode_add(circuit->u.bc.adjdb[level - 1], adj);
 		adj->dischanges[level - 1] = 0;
@@ -94,7 +97,7 @@ struct isis_adjacency *isis_new_adj(const u_char *id, const u_char *snpa,
 	return adj;
 }
 
-struct isis_adjacency *isis_adj_lookup(const u_char *sysid, struct list *adjdb)
+struct isis_adjacency *isis_adj_lookup(const uint8_t *sysid, struct list *adjdb)
 {
 	struct isis_adjacency *adj;
 	struct listnode *node;
@@ -106,7 +109,7 @@ struct isis_adjacency *isis_adj_lookup(const u_char *sysid, struct list *adjdb)
 	return NULL;
 }
 
-struct isis_adjacency *isis_adj_lookup_snpa(const u_char *ssnpa,
+struct isis_adjacency *isis_adj_lookup_snpa(const uint8_t *ssnpa,
 					    struct list *adjdb)
 {
 	struct listnode *node;
@@ -119,6 +122,8 @@ struct isis_adjacency *isis_adj_lookup_snpa(const u_char *ssnpa,
 	return NULL;
 }
 
+DEFINE_HOOK(isis_adj_state_change_hook, (struct isis_adjacency *adj), (adj))
+
 void isis_delete_adj(void *arg)
 {
 	struct isis_adjacency *adj = arg;
@@ -127,6 +132,10 @@ void isis_delete_adj(void *arg)
 		return;
 
 	THREAD_TIMER_OFF(adj->t_expire);
+	if (adj->adj_state != ISIS_ADJ_DOWN) {
+		adj->adj_state = ISIS_ADJ_DOWN;
+		hook_call(isis_adj_state_change_hook, adj);
+	}
 
 	/* remove from SPF trees */
 	spftree_area_adj_del(adj->circuit->area, adj);
@@ -159,6 +168,54 @@ static const char *adj_state2string(int state)
 	}
 
 	return NULL; /* not reached */
+}
+
+void isis_adj_process_threeway(struct isis_adjacency *adj,
+			       struct isis_threeway_adj *tw_adj,
+			       enum isis_adj_usage adj_usage)
+{
+	enum isis_threeway_state next_tw_state = ISIS_THREEWAY_DOWN;
+
+	if (tw_adj && !adj->circuit->disable_threeway_adj) {
+		if (tw_adj->state == ISIS_THREEWAY_DOWN) {
+			next_tw_state = ISIS_THREEWAY_INITIALIZING;
+		} else if (tw_adj->state == ISIS_THREEWAY_INITIALIZING) {
+			next_tw_state = ISIS_THREEWAY_UP;
+		} else if (tw_adj->state == ISIS_THREEWAY_UP) {
+			if (adj->threeway_state == ISIS_THREEWAY_DOWN)
+				next_tw_state = ISIS_THREEWAY_DOWN;
+			else
+				next_tw_state = ISIS_THREEWAY_UP;
+		}
+	} else {
+		next_tw_state = ISIS_THREEWAY_UP;
+	}
+
+	if (next_tw_state != adj->threeway_state) {
+		if (isis->debugs & DEBUG_ADJ_PACKETS) {
+			zlog_info("ISIS-Adj (%s): Threeway state change %s to %s",
+				  adj->circuit->area->area_tag,
+				  isis_threeway_state_name(adj->threeway_state),
+				  isis_threeway_state_name(next_tw_state));
+		}
+	}
+
+	if (next_tw_state != ISIS_THREEWAY_DOWN)
+		fabricd_initial_sync_hello(adj->circuit);
+
+	if (next_tw_state == ISIS_THREEWAY_DOWN) {
+		isis_adj_state_change(adj, ISIS_ADJ_DOWN, "Neighbor restarted");
+		return;
+	}
+
+	if (next_tw_state == ISIS_THREEWAY_UP) {
+		if (adj->adj_state != ISIS_ADJ_UP) {
+			isis_adj_state_change(adj, ISIS_ADJ_UP, NULL);
+			adj->adj_usage = adj_usage;
+		}
+	}
+
+	adj->threeway_state = next_tw_state;
 }
 
 void isis_adj_state_change(struct isis_adjacency *adj,
@@ -205,8 +262,7 @@ void isis_adj_state_change(struct isis_adjacency *adj,
 				continue;
 			if (new_state == ISIS_ADJ_UP) {
 				circuit->upadjcount[level - 1]++;
-				isis_event_adjacency_state_change(adj,
-								  new_state);
+				hook_call(isis_adj_state_change_hook, adj);
 				/* update counter & timers for debugging
 				 * purposes */
 				adj->last_flap = time(NULL);
@@ -217,10 +273,9 @@ void isis_adj_state_change(struct isis_adjacency *adj,
 
 				circuit->upadjcount[level - 1]--;
 				if (circuit->upadjcount[level - 1] == 0)
-					isis_circuit_lsp_queue_clean(circuit);
+					isis_tx_queue_clean(circuit->tx_queue);
 
-				isis_event_adjacency_state_change(adj,
-								  new_state);
+				hook_call(isis_adj_state_change_hook, adj);
 				del = true;
 			}
 
@@ -241,7 +296,6 @@ void isis_adj_state_change(struct isis_adjacency *adj,
 		if (del)
 			isis_delete_adj(adj);
 
-		adj = NULL;
 	} else if (circuit->circ_type == CIRCUIT_T_P2P) {
 		del = false;
 		for (level = IS_LEVEL_1; level <= IS_LEVEL_2; level++) {
@@ -249,8 +303,7 @@ void isis_adj_state_change(struct isis_adjacency *adj,
 				continue;
 			if (new_state == ISIS_ADJ_UP) {
 				circuit->upadjcount[level - 1]++;
-				isis_event_adjacency_state_change(adj,
-								  new_state);
+				hook_call(isis_adj_state_change_hook, adj);
 
 				if (adj->sys_type == ISIS_SYSTYPE_UNKNOWN)
 					send_hello(circuit, level);
@@ -260,27 +313,29 @@ void isis_adj_state_change(struct isis_adjacency *adj,
 				adj->last_flap = time(NULL);
 				adj->flaps++;
 
-				/* 7.3.17 - going up on P2P -> send CSNP */
-				/* FIXME: yup, I know its wrong... but i will do
-				 * it! (for now) */
-				send_csnp(circuit, level);
+				if (level == IS_LEVEL_1) {
+					thread_add_timer(master, send_l1_csnp,
+							 circuit, 0,
+							 &circuit->t_send_csnp[0]);
+				} else {
+					thread_add_timer(master, send_l2_csnp,
+							 circuit, 0,
+							 &circuit->t_send_csnp[1]);
+				}
 			} else if (new_state == ISIS_ADJ_DOWN) {
 				if (adj->circuit->u.p2p.neighbor == adj)
 					adj->circuit->u.p2p.neighbor = NULL;
 				circuit->upadjcount[level - 1]--;
 				if (circuit->upadjcount[level - 1] == 0)
-					isis_circuit_lsp_queue_clean(circuit);
+					isis_tx_queue_clean(circuit->tx_queue);
 
-				isis_event_adjacency_state_change(adj,
-								  new_state);
+				hook_call(isis_adj_state_change_hook, adj);
 				del = true;
 			}
 		}
 
 		if (del)
 			isis_delete_adj(adj);
-
-		adj = NULL;
 	}
 
 	return;
@@ -437,10 +492,10 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 			for (unsigned int i = 0; i < adj->area_address_count;
 			     i++) {
 				vty_out(vty, "      %s\n",
-					  isonet_print(adj->area_addresses[i]
-							       .area_addr,
-						       adj->area_addresses[i]
-							       .addr_len));
+					isonet_print(adj->area_addresses[i]
+							     .area_addr,
+						     adj->area_addresses[i]
+							     .addr_len));
 			}
 		}
 		if (adj->ipv4_address_count) {
@@ -448,7 +503,7 @@ void isis_adj_print_vty(struct isis_adjacency *adj, struct vty *vty,
 			for (unsigned int i = 0; i < adj->ipv4_address_count;
 			     i++)
 				vty_out(vty, "      %s\n",
-					  inet_ntoa(adj->ipv4_addresses[i]));
+					inet_ntoa(adj->ipv4_addresses[i]));
 		}
 		if (adj->ipv6_address_count) {
 			vty_out(vty, "    IPv6 Address(es):\n");

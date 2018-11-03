@@ -24,32 +24,38 @@
 #include "memory.h"
 DECLARE_MGROUP(MVTYSH)
 
-#define VTYSH_ZEBRA  0x01
-#define VTYSH_RIPD   0x02
-#define VTYSH_RIPNGD 0x04
-#define VTYSH_OSPFD  0x08
-#define VTYSH_OSPF6D 0x10
-#define VTYSH_BGPD   0x20
-#define VTYSH_ISISD  0x40
-#define VTYSH_PIMD   0x100
-#define VTYSH_LDPD   0x200
-#define VTYSH_WATCHFRR 0x400
-#define VTYSH_NHRPD  0x800
-#define VTYSH_EIGRPD 0x1000
-#define VTYSH_BABELD 0x2000
-#define VTYSH_SHARPD 0x4000
+#define VTYSH_ZEBRA     0x00001
+#define VTYSH_RIPD      0x00002
+#define VTYSH_RIPNGD    0x00004
+#define VTYSH_OSPFD     0x00008
+#define VTYSH_OSPF6D    0x00010
+#define VTYSH_BGPD      0x00020
+#define VTYSH_ISISD     0x00040
+#define VTYSH_PIMD      0x00080
+#define VTYSH_LDPD      0x00100
+#define VTYSH_WATCHFRR  0x00200
+#define VTYSH_NHRPD     0x00400
+#define VTYSH_EIGRPD    0x00800
+#define VTYSH_BABELD    0x01000
+#define VTYSH_SHARPD    0x02000
+#define VTYSH_PBRD      0x04000
+#define VTYSH_STATICD   0x08000
+#define VTYSH_BFDD      0x10000
+#define VTYSH_FABRICD   0x20000
 
+#define VTYSH_WAS_ACTIVE (-2)
 
 /* commands in REALLYALL are crucial to correct vtysh operation */
 #define VTYSH_REALLYALL	  ~0U
 /* watchfrr is not in ALL since library CLI functions should not be
  * run on it (logging & co. should stay in a fixed/frozen config, and
  * things like prefix lists are not even initialised) */
-#define VTYSH_ALL	  VTYSH_ZEBRA|VTYSH_RIPD|VTYSH_RIPNGD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_LDPD|VTYSH_BGPD|VTYSH_ISISD|VTYSH_PIMD|VTYSH_NHRPD|VTYSH_EIGRPD|VTYSH_BABELD|VTYSH_SHARPD
-#define VTYSH_RMAP	  VTYSH_ZEBRA|VTYSH_RIPD|VTYSH_RIPNGD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_BGPD|VTYSH_PIMD|VTYSH_EIGRPD
-#define VTYSH_INTERFACE	  VTYSH_ZEBRA|VTYSH_RIPD|VTYSH_RIPNGD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_ISISD|VTYSH_PIMD|VTYSH_NHRPD|VTYSH_EIGRPD|VTYSH_BABELD
+#define VTYSH_ALL	  VTYSH_ZEBRA|VTYSH_RIPD|VTYSH_RIPNGD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_LDPD|VTYSH_BGPD|VTYSH_ISISD|VTYSH_PIMD|VTYSH_NHRPD|VTYSH_EIGRPD|VTYSH_BABELD|VTYSH_SHARPD|VTYSH_PBRD|VTYSH_STATICD|VTYSH_BFDD|VTYSH_FABRICD
+#define VTYSH_RMAP	  VTYSH_ZEBRA|VTYSH_RIPD|VTYSH_RIPNGD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_BGPD|VTYSH_ISISD|VTYSH_PIMD|VTYSH_EIGRPD|VTYSH_SHARPD|VTYSH_FABRICD
+#define VTYSH_INTERFACE	  VTYSH_ZEBRA|VTYSH_RIPD|VTYSH_RIPNGD|VTYSH_OSPFD|VTYSH_OSPF6D|VTYSH_ISISD|VTYSH_PIMD|VTYSH_NHRPD|VTYSH_EIGRPD|VTYSH_BABELD|VTYSH_PBRD|VTYSH_FABRICD
 #define VTYSH_NS          VTYSH_ZEBRA
-#define VTYSH_VRF	  VTYSH_ZEBRA|VTYSH_PIMD
+#define VTYSH_VRF	  VTYSH_ZEBRA|VTYSH_PIMD|VTYSH_STATICD
+#define VTYSH_KEYS        VTYSH_RIPD|VTYSH_EIGRPD
 
 enum vtysh_write_integrated {
 	WRITE_INTEGRATED_UNSPECIFIED,
@@ -71,6 +77,7 @@ void vtysh_user_init(void);
 
 int vtysh_execute(const char *);
 int vtysh_execute_no_pager(const char *);
+int vtysh_execute_command_questionmark(char *input);
 
 char *vtysh_prompt(void);
 
@@ -87,7 +94,7 @@ int vtysh_write_config_integrated(void);
 
 void vtysh_config_parse_line(void *, const char *);
 
-void vtysh_config_dump(FILE *);
+void vtysh_config_dump(void);
 
 void vtysh_config_init(void);
 
@@ -100,5 +107,7 @@ void suid_off(void);
 extern int execute_flag;
 
 extern struct vty *vty;
+
+extern int user_mode;
 
 #endif /* VTYSH_H */

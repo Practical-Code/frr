@@ -269,8 +269,10 @@ void ospf_nbr_add_self(struct ospf_interface *oi, struct in_addr router_id)
 	rn = route_node_get(oi->nbrs, &p);
 	if (rn->info) {
 		/* There is already pseudo neighbor. */
-		zlog_warn("router_id %s already present in neighbor table. node refcount %u",
-			  inet_ntoa(router_id), rn->lock);
+		if (IS_DEBUG_OSPF_EVENT)
+			zlog_debug(
+				"router_id %s already present in neighbor table. node refcount %u",
+				inet_ntoa(router_id), rn->lock);
 		route_unlock_node(rn);
 	} else
 		rn->info = oi->nbr_self;
@@ -461,9 +463,8 @@ struct ospf_neighbor *ospf_nbr_get(struct ospf_interface *oi,
 
 	if (oi->type == OSPF_IFTYPE_VIRTUALLINK
 	    || oi->type == OSPF_IFTYPE_POINTOPOINT)
-		key.u.prefix4 =
-			ospfh->router_id; /* index vlink and ptp nbrs by
-					     router-id */
+		key.u.prefix4 = ospfh->router_id; /* index vlink and ptp nbrs by
+						     router-id */
 	else
 		key.u.prefix4 = iph->ip_src;
 

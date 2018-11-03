@@ -68,7 +68,10 @@ struct zebra_vni_t_ {
 	vni_t vni;
 
 	/* Flag for advertising gw macip */
-	u_int8_t advertise_gw_macip;
+	uint8_t advertise_gw_macip;
+
+	/* Flag for advertising gw macip */
+	uint8_t advertise_subnet;
 
 	/* Corresponding VxLAN interface. */
 	struct interface *vxlan_if;
@@ -97,6 +100,9 @@ struct zebra_l3vni_t_ {
 
 	/* vrf_id */
 	vrf_id_t vrf_id;
+
+	uint32_t filter;
+#define PREFIX_ROUTES_ONLY	(1 << 0) /* l3-vni used for prefix routes only */
 
 	/* Local IP */
 	struct in_addr local_vtep_ip;
@@ -174,10 +180,9 @@ static inline const char *zl3vni_rmac2str(zebra_l3vni_t *zl3vni, char *buf,
  */
 static inline int is_l3vni_oper_up(zebra_l3vni_t *zl3vni)
 {
-	return (is_evpn_enabled() && zl3vni &&
-		(zl3vni->vrf_id != VRF_UNKNOWN) &&
-		zl3vni->vxlan_if && if_is_operative(zl3vni->vxlan_if) &&
-		zl3vni->svi_if && if_is_operative(zl3vni->svi_if));
+	return (is_evpn_enabled() && zl3vni && (zl3vni->vrf_id != VRF_UNKNOWN)
+		&& zl3vni->vxlan_if && if_is_operative(zl3vni->vxlan_if)
+		&& zl3vni->svi_if && if_is_operative(zl3vni->svi_if));
 }
 
 static inline const char *zl3vni_state2str(zebra_l3vni_t *zl3vni)
@@ -198,8 +203,7 @@ static inline vrf_id_t zl3vni_vrf_id(zebra_l3vni_t *zl3vni)
 	return zl3vni->vrf_id;
 }
 
-static inline void zl3vni_get_rmac(zebra_l3vni_t *zl3vni,
-				   struct ethaddr *rmac)
+static inline void zl3vni_get_rmac(zebra_l3vni_t *zl3vni, struct ethaddr *rmac)
 {
 	if (!zl3vni)
 		return;
@@ -211,6 +215,15 @@ static inline void zl3vni_get_rmac(zebra_l3vni_t *zl3vni,
 		memcpy(rmac->octet, zl3vni->svi_if->hw_addr, ETH_ALEN);
 }
 
+struct host_rb_entry {
+	RB_ENTRY(host_rb_entry) hl_entry;
+
+	struct prefix p;
+};
+
+RB_HEAD(host_rb_tree_entry, host_rb_entry);
+RB_PROTOTYPE(host_rb_tree_entry, host_rb_entry, hl_entry,
+	     host_rb_entry_compare);
 /*
  * MAC hash table.
  *
@@ -227,12 +240,15 @@ struct zebra_mac_t_ {
 	/* MAC address. */
 	struct ethaddr macaddr;
 
-	u_int32_t flags;
+	uint32_t flags;
 #define ZEBRA_MAC_LOCAL   0x01
 #define ZEBRA_MAC_REMOTE  0x02
 #define ZEBRA_MAC_AUTO    0x04  /* Auto created for neighbor. */
 #define ZEBRA_MAC_STICKY  0x08  /* Static MAC */
 #define ZEBRA_MAC_REMOTE_RMAC  0x10  /* remote router mac */
+#define ZEBRA_MAC_DEF_GW  0x20
+/* remote VTEP advertised MAC as default GW */
+#define ZEBRA_MAC_REMOTE_DEF_GW	0x40
 
 	/* Local or remote info. */
 	union {
@@ -244,11 +260,15 @@ struct zebra_mac_t_ {
 		struct in_addr r_vtep_ip;
 	} fwd_info;
 
+	/* Mobility sequence numbers associated with this entry. */
+	uint32_t rem_seq;
+	uint32_t loc_seq;
+
 	/* List of neigh associated with this mac */
 	struct list *neigh_list;
 
 	/* list of hosts pointing to this remote RMAC */
-	struct list *host_list;
+	struct host_rb_tree_entry host_rb;
 };
 
 /*
@@ -260,7 +280,7 @@ struct mac_walk_ctx {
 	int uninstall;		/* uninstall from kernel? */
 	int upd_client;		/* uninstall from client? */
 
-	u_int32_t flags;
+	uint32_t flags;
 #define DEL_LOCAL_MAC                0x1
 #define DEL_REMOTE_MAC               0x2
 #define DEL_ALL_MAC                  (DEL_LOCAL_MAC | DEL_REMOTE_MAC)
@@ -270,7 +290,7 @@ struct mac_walk_ctx {
 	struct in_addr r_vtep_ip; /* To walk MACs from specific VTEP */
 
 	struct vty *vty;	  /* Used by VTY handlers */
-	u_int32_t count;	  /* Used by VTY handlers */
+	uint32_t count;		  /* Used by VTY handlers */
 	struct json_object *json; /* Used for JSON Output */
 };
 
@@ -310,18 +330,30 @@ struct zebra_neigh_t_ {
 	/* Underlying interface. */
 	ifindex_t ifindex;
 
-	u_int32_t flags;
+	uint32_t flags;
 #define ZEBRA_NEIGH_LOCAL     0x01
 #define ZEBRA_NEIGH_REMOTE    0x02
 #define ZEBRA_NEIGH_REMOTE_NH    0x04 /* neigh entry for remote vtep */
+#define ZEBRA_NEIGH_DEF_GW    0x08
+#define ZEBRA_NEIGH_ROUTER_FLAG 0x10
 
 	enum zebra_neigh_state state;
 
 	/* Remote VTEP IP - applicable only for remote neighbors. */
 	struct in_addr r_vtep_ip;
 
+	/*
+	 * Mobility sequence numbers associated with this entry. The rem_seq
+	 * represents the sequence number from the client (BGP) for the most
+	 * recent add or update of this entry while the loc_seq represents
+	 * the sequence number informed (or to be informed) by zebra to BGP
+	 * for this entry.
+	 */
+	uint32_t rem_seq;
+	uint32_t loc_seq;
+
 	/* list of hosts pointing to this remote NH entry */
-	struct list *host_list;
+	struct host_rb_tree_entry host_rb;
 };
 
 /*
@@ -333,7 +365,7 @@ struct neigh_walk_ctx {
 	int uninstall;		/* uninstall from kernel? */
 	int upd_client;		/* uninstall from client? */
 
-	u_int32_t flags;
+	uint32_t flags;
 #define DEL_LOCAL_NEIGH              0x1
 #define DEL_REMOTE_NEIGH             0x2
 #define DEL_ALL_NEIGH                (DEL_LOCAL_NEIGH | DEL_REMOTE_NEIGH)
@@ -343,8 +375,8 @@ struct neigh_walk_ctx {
 	struct in_addr r_vtep_ip; /* To walk neighbors from specific VTEP */
 
 	struct vty *vty;	  /* Used by VTY handlers */
-	u_int32_t count;	  /* Used by VTY handlers */
-	u_char addr_width;	/* Used by VTY handlers */
+	uint32_t count;		  /* Used by VTY handlers */
+	uint8_t addr_width;       /* Used by VTY handlers */
 	struct json_object *json; /* Used for JSON Output */
 };
 

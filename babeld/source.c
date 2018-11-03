@@ -20,6 +20,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +35,7 @@ THE SOFTWARE.
 #include "source.h"
 #include "babel_interface.h"
 #include "route.h"
+#include "babel_errors.h"
 
 struct source *srcs = NULL;
 
@@ -58,7 +63,7 @@ find_source(const unsigned char *id, const unsigned char *p, unsigned char plen,
 
     src = malloc(sizeof(struct source));
     if(src == NULL) {
-        zlog_err("malloc(source): %s", safe_strerror(errno));
+        flog_err(EC_BABEL_MEMORY, "malloc(source): %s", safe_strerror(errno));
         return NULL;
     }
 

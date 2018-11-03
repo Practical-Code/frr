@@ -119,14 +119,15 @@ static void peer_process(struct hash_backet *hb, void *arg)
 	}
 
 	/* if calculated next update for this peer < current delay, use it */
-	if (next_update->tv_sec <= 0 || timercmp(&diff, next_update, <))
+	if (next_update->tv_sec < 0 || timercmp(&diff, next_update, <))
 		*next_update = diff;
 }
 
-static int peer_hash_cmp(const void *f, const void *s)
+static bool peer_hash_cmp(const void *f, const void *s)
 {
 	const struct pkat *p1 = f;
 	const struct pkat *p2 = s;
+
 	return p1->peer == p2->peer;
 }
 
@@ -180,6 +181,8 @@ void *bgp_keepalives_start(void *arg)
 	pthread_cond_init(peerhash_cond, &attrs);
 	pthread_condattr_destroy(&attrs);
 
+	frr_pthread_set_name(fpt, NULL, "bgpd_ka");
+
 	/* initialize peer hashtable */
 	peerhash = hash_create_size(2048, peer_hash_key, peer_hash_cmp, NULL);
 	pthread_mutex_lock(peerhash_mtx);
@@ -227,16 +230,16 @@ void bgp_keepalives_on(struct peer *peer)
 	if (CHECK_FLAG(peer->thread_flags, PEER_THREAD_KEEPALIVES_ON))
 		return;
 
-	struct frr_pthread *fpt = frr_pthread_get(PTHREAD_KEEPALIVES);
+	struct frr_pthread *fpt = bgp_pth_ka;
 	assert(fpt->running);
 
 	/* placeholder bucket data to use for fast key lookups */
 	static struct pkat holder = {0};
 
-	if (!peerhash_mtx) {
-		zlog_warn("%s: call bgp_keepalives_init() first", __func__);
-		return;
-	}
+	/*
+	 * We need to ensure that bgp_keepalives_init was called first
+	 */
+	assert(peerhash_mtx);
 
 	pthread_mutex_lock(peerhash_mtx);
 	{
@@ -257,16 +260,16 @@ void bgp_keepalives_off(struct peer *peer)
 	if (!CHECK_FLAG(peer->thread_flags, PEER_THREAD_KEEPALIVES_ON))
 		return;
 
-	struct frr_pthread *fpt = frr_pthread_get(PTHREAD_KEEPALIVES);
+	struct frr_pthread *fpt = bgp_pth_ka;
 	assert(fpt->running);
 
 	/* placeholder bucket data to use for fast key lookups */
 	static struct pkat holder = {0};
 
-	if (!peerhash_mtx) {
-		zlog_warn("%s: call bgp_keepalives_init() first", __func__);
-		return;
-	}
+	/*
+	 * We need to ensure that bgp_keepalives_init was called first
+	 */
+	assert(peerhash_mtx);
 
 	pthread_mutex_lock(peerhash_mtx);
 	{

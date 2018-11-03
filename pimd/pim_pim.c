@@ -38,6 +38,7 @@
 #include "pim_assert.h"
 #include "pim_msg.h"
 #include "pim_register.h"
+#include "pim_errors.h"
 
 static int on_pim_hello_send(struct thread *t);
 static int pim_hello_send(struct interface *ifp, uint16_t holdtime);
@@ -115,7 +116,8 @@ void pim_sock_delete(struct interface *ifp, const char *delete_message)
 		  delete_message);
 
 	if (!ifp->info) {
-		zlog_err("%s: %s: but PIM not enabled on interface %s (!)",
+		flog_err(EC_PIM_CONFIG,
+			 "%s: %s: but PIM not enabled on interface %s (!)",
 			 __PRETTY_FUNCTION__, delete_message, ifp->name);
 		return;
 	}
@@ -330,8 +332,9 @@ static int pim_sock_read(struct thread *t)
 		if (!ifp || !ifp->info) {
 			if (PIM_DEBUG_PIM_PACKETS)
 				zlog_debug(
-					"%s: Received incoming pim packet on interface not yet configured for pim",
-					__PRETTY_FUNCTION__);
+					"%s: Received incoming pim packet on interface(%s:%d) not yet configured for pim",
+					__PRETTY_FUNCTION__,
+					ifp ? ifp->name : "Unknown", ifindex);
 			goto done;
 		}
 		int fail = pim_pim_packet(ifp, buf, len);
@@ -521,7 +524,7 @@ int pim_msg_send(int fd, struct in_addr src, struct in_addr dst,
 	socklen_t tolen;
 	unsigned char buffer[10000];
 	unsigned char *msg_start;
-	uint8_t ttl = MAXTTL;
+	uint8_t ttl;
 	struct pim_msg_header *header;
 	struct ip *ip;
 
@@ -570,8 +573,6 @@ int pim_msg_send(int fd, struct in_addr src, struct in_addr dst,
 	ip->ip_len = htons(sendlen);
 
 	if (PIM_DEBUG_PIM_PACKETS) {
-		struct pim_msg_header *header =
-			(struct pim_msg_header *)pim_msg;
 		char dst_str[INET_ADDRSTRLEN];
 		pim_inet4_dump("<dst?>", dst, dst_str, sizeof(dst_str));
 		zlog_debug("%s: to %s on %s: msg_size=%d checksum=%x",
@@ -653,7 +654,7 @@ static int pim_hello_send(struct interface *ifp, uint16_t holdtime)
 {
 	struct pim_interface *pim_ifp = ifp->info;
 
-	if (pim_if_is_loopback(pim_ifp->pim, ifp))
+	if (if_is_loopback_or_vrf(ifp))
 		return 0;
 
 	if (hello_send(ifp, holdtime)) {
@@ -755,7 +756,7 @@ void pim_hello_restart_triggered(struct interface *ifp)
 	/*
 	 * No need to ever start loopback or vrf device hello's
 	 */
-	if (pim_if_is_loopback(pim_ifp->pim, ifp))
+	if (if_is_loopback_or_vrf(ifp))
 		return;
 
 	/*

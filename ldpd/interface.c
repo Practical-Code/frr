@@ -45,7 +45,7 @@ RB_GENERATE(iface_head, iface, entry, iface_compare)
 static __inline int
 iface_compare(const struct iface *a, const struct iface *b)
 {
-	return (if_cmp_name_func((char *)a->name, (char *)b->name));
+	return if_cmp_name_func(a->name, b->name);
 }
 
 struct iface *
@@ -306,8 +306,11 @@ if_reset(struct iface *iface, int af)
 	ia = iface_af_get(iface, af);
 	if_stop_hello_timer(ia);
 
-	while ((adj = RB_ROOT(ia_adj_head, &ia->adj_tree)) != NULL)
+	while (!RB_EMPTY(ia_adj_head, &ia->adj_tree)) {
+		adj = RB_ROOT(ia_adj_head, &ia->adj_tree);
+
 		adj_del(adj, S_SHUTDOWN);
+	}
 
 	/* try to cleanup */
 	switch (af) {

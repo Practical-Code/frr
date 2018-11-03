@@ -40,6 +40,9 @@
 #include "ripngd/ripngd.h"
 
 /* RIPngd options. */
+#if CONFDATE > 20190521
+	CPP_NOTICE("-r / --retain has reached deprecation EOL, remove")
+#endif
 struct option longopts[] = {{"retain", no_argument, NULL, 'r'}, {0}};
 
 /* ripngd privileges */
@@ -60,11 +63,6 @@ struct zebra_privs_t ripngd_privs = {
 	.cap_num_i = 0};
 
 
-/* RIPngd program name */
-
-/* Route retain mode flag. */
-int retain_mode = 0;
-
 /* Master of threads. */
 struct thread_master *master;
 
@@ -78,7 +76,7 @@ static void sighup(void)
 	ripng_reset();
 
 	/* Reload config file. */
-	vty_read_config(ripngd_di.config_file, config_default);
+	vty_read_config(NULL, ripngd_di.config_file, config_default);
 
 	/* Try to return to normal operation. */
 }
@@ -88,8 +86,7 @@ static void sigint(void)
 {
 	zlog_notice("Terminating on signal");
 
-	if (!retain_mode)
-		ripng_clean();
+	ripng_clean();
 
 	ripng_zebra_stop();
 	frr_fini();
@@ -121,6 +118,10 @@ struct quagga_signal_t ripng_signals[] = {
 	},
 };
 
+static const struct frr_yang_module_info *ripngd_yang_modules[] = {
+	&frr_interface_info,
+};
+
 FRR_DAEMON_INFO(ripngd, RIPNG, .vty_port = RIPNG_VTY_PORT,
 
 		.proghelp = "Implementation of the RIPng routing protocol.",
@@ -128,29 +129,40 @@ FRR_DAEMON_INFO(ripngd, RIPNG, .vty_port = RIPNG_VTY_PORT,
 		.signals = ripng_signals,
 		.n_signals = array_size(ripng_signals),
 
-		.privs = &ripngd_privs, )
+		.privs = &ripngd_privs,
+
+		.yang_modules = ripngd_yang_modules,
+		.n_yang_modules = array_size(ripngd_yang_modules), )
+
+#if CONFDATE > 20190521
+CPP_NOTICE("-r / --retain has reached deprecation EOL, remove")
+#endif
+#define DEPRECATED_OPTIONS "r"
 
 /* RIPngd main routine. */
 int main(int argc, char **argv)
 {
 	frr_preinit(&ripngd_di, argc, argv);
-	frr_opt_add(
-		"r", longopts,
-		"  -r, --retain       When program terminates, retain added route by ripd.\n");
+
+	frr_opt_add("" DEPRECATED_OPTIONS, longopts, "");
 
 	while (1) {
 		int opt;
 
 		opt = frr_getopt(argc, argv, NULL);
 
+		if (opt && opt < 128 && strchr(DEPRECATED_OPTIONS, opt)) {
+			fprintf(stderr,
+				"The -%c option no longer exists.\nPlease refer to the manual.\n",
+				opt);
+			continue;
+		}
+
 		if (opt == EOF)
 			break;
 
 		switch (opt) {
 		case 0:
-			break;
-		case 'r':
-			retain_mode = 1;
 			break;
 		default:
 			frr_help_exit(1);
@@ -161,7 +173,7 @@ int main(int argc, char **argv)
 	master = frr_init();
 
 	/* Library inits. */
-	vrf_init(NULL, NULL, NULL, NULL);
+	vrf_init(NULL, NULL, NULL, NULL, NULL);
 
 	/* RIPngd inits. */
 	ripng_init();

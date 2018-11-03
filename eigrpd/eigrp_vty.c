@@ -55,6 +55,10 @@
 #include "eigrpd/eigrp_dump.h"
 #include "eigrpd/eigrp_const.h"
 
+#ifndef VTYSH_EXTRACT_PL
+#include "eigrpd/eigrp_vty_clippy.c"
+#endif
+
 static int config_write_network(struct vty *vty, struct eigrp *eigrp)
 {
 	struct route_node *rn;
@@ -109,8 +113,7 @@ static int config_write_interfaces(struct vty *vty, struct eigrp *eigrp)
 		if (ei->params.auth_keychain) {
 			vty_out(vty,
 				" ip authentication key-chain eigrp %d %s\n",
-				eigrp->AS,
-				ei->params.auth_keychain);
+				eigrp->AS, ei->params.auth_keychain);
 		}
 
 		if (ei->params.v_hello != EIGRP_HELLO_INTERVAL_DEFAULT) {
@@ -147,8 +150,7 @@ static int eigrp_write_interface(struct vty *vty)
 			vty_out(vty, " description %s\n", ifp->desc);
 
 		if (ei->params.bandwidth != EIGRP_BANDWIDTH_DEFAULT)
-			vty_out(vty, " bandwidth %u\n",
-				ei->params.bandwidth);
+			vty_out(vty, " bandwidth %u\n", ei->params.bandwidth);
 		if (ei->params.delay != EIGRP_DELAY_DEFAULT)
 			vty_out(vty, " delay %u\n", ei->params.delay);
 		if (ei->params.v_hello != EIGRP_HELLO_INTERVAL_DEFAULT)
@@ -495,7 +497,7 @@ DEFUN (show_ip_eigrp_topology,
 				     & EIGRP_NEXTHOP_ENTRY_FSUCCESSOR_FLAG)
 				    == EIGRP_NEXTHOP_ENTRY_FSUCCESSOR_FLAG))) {
 				show_ip_eigrp_nexthop_entry(vty, eigrp, te,
-							     &first);
+							    &first);
 				first = 0;
 			}
 		}
@@ -610,7 +612,7 @@ DEFUN (eigrp_if_delay,
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
 	struct eigrp *eigrp;
-	u_int32_t delay;
+	uint32_t delay;
 
 	eigrp = eigrp_lookup();
 	if (eigrp == NULL) {
@@ -659,16 +661,15 @@ DEFUN (no_eigrp_if_delay,
 	return CMD_SUCCESS;
 }
 
-DEFUN (eigrp_if_bandwidth,
+DEFPY (eigrp_if_bandwidth,
        eigrp_if_bandwidth_cmd,
-       "eigrp bandwidth (1-10000000)",
+       "eigrp bandwidth (1-10000000)$bw",
        "EIGRP specific commands\n"
        "Set bandwidth informational parameter\n"
        "Bandwidth in kilobits\n")
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
-	u_int32_t bandwidth;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -682,9 +683,7 @@ DEFUN (eigrp_if_bandwidth,
 		return CMD_SUCCESS;
 	}
 
-	bandwidth = atoi(argv[1]->arg);
-
-	ei->params.bandwidth = bandwidth;
+	ei->params.bandwidth = bw;
 	eigrp_if_reset(ifp);
 
 	return CMD_SUCCESS;
@@ -729,7 +728,7 @@ DEFUN (eigrp_if_ip_hellointerval,
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
-	u_int32_t hello;
+	uint32_t hello;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -777,8 +776,7 @@ DEFUN (no_eigrp_if_ip_hellointerval,
 	ei->params.v_hello = EIGRP_HELLO_INTERVAL_DEFAULT;
 
 	THREAD_TIMER_OFF(ei->t_hello);
-	thread_add_timer(master, eigrp_hello_timer, ei, 1,
-			 &ei->t_hello);
+	thread_add_timer(master, eigrp_hello_timer, ei, 1, &ei->t_hello);
 
 	return CMD_SUCCESS;
 }
@@ -793,7 +791,7 @@ DEFUN (eigrp_if_ip_holdinterval,
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	struct eigrp_interface *ei = ifp->info;
-	u_int32_t hold;
+	uint32_t hold;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -824,7 +822,7 @@ DEFUN (eigrp_ip_summary_address,
        "Summary <network>/<length>, e.g. 192.168.0.0/16\n")
 {
 	// VTY_DECLVAR_CONTEXT(interface, ifp);
-	// u_int32_t AS;
+	// uint32_t AS;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -851,7 +849,7 @@ DEFUN (no_eigrp_ip_summary_address,
        "Summary <network>/<length>, e.g. 192.168.0.0/16\n")
 {
 	// VTY_DECLVAR_CONTEXT(interface, ifp);
-	// u_int32_t AS;
+	// uint32_t AS;
 	struct eigrp *eigrp;
 
 	eigrp = eigrp_lookup();
@@ -978,9 +976,10 @@ DEFUN (no_eigrp_authentication_mode,
 	return CMD_SUCCESS;
 }
 
-DEFUN (eigrp_authentication_keychain,
+DEFPY (eigrp_authentication_keychain,
        eigrp_authentication_keychain_cmd,
-       "ip authentication key-chain eigrp (1-65535) WORD",
+       "[no] ip authentication key-chain eigrp (1-65535)$as WORD$name",
+       NO_STR
        "Interface Internet Protocol config commands\n"
        "Authentication subcommands\n"
        "Key-chain\n"
@@ -1004,54 +1003,29 @@ DEFUN (eigrp_authentication_keychain,
 		return CMD_SUCCESS;
 	}
 
-	keychain = keychain_lookup(argv[4]->arg);
+	if (no) {
+		if ((ei->params.auth_keychain != NULL)
+		    && (strcmp(ei->params.auth_keychain, name) == 0)) {
+			free(ei->params.auth_keychain);
+			ei->params.auth_keychain = NULL;
+		} else
+			vty_out(vty,
+				"Key chain with specified name not configured on interface\n");
+		return CMD_SUCCESS;
+	}
+
+	keychain = keychain_lookup(name);
 	if (keychain != NULL) {
 		if (ei->params.auth_keychain) {
 			free(ei->params.auth_keychain);
-			ei->params.auth_keychain =
-				strdup(keychain->name);
+			ei->params.auth_keychain = strdup(keychain->name);
 		} else
-			ei->params.auth_keychain =
-				strdup(keychain->name);
-	} else
-		vty_out(vty, "Key chain with specified name not found\n");
-
-	return CMD_SUCCESS;
-}
-
-DEFUN (no_eigrp_authentication_keychain,
-       no_eigrp_authentication_keychain_cmd,
-       "no ip authentication key-chain eigrp (1-65535) WORD",
-       "Disable\n"
-       "Interface Internet Protocol config commands\n"
-       "Authentication subcommands\n"
-       "Key-chain\n"
-       "Enhanced Interior Gateway Routing Protocol (EIGRP)\n"
-       "Autonomous system number\n"
-       "Name of key-chain\n")
-{
-	VTY_DECLVAR_CONTEXT(interface, ifp);
-	struct eigrp_interface *ei = ifp->info;
-	struct eigrp *eigrp;
-
-	eigrp = eigrp_lookup();
-	if (eigrp == NULL) {
-		vty_out(vty, "EIGRP Routing Process not enabled\n");
-		return CMD_SUCCESS;
-	}
-
-	if (!ei) {
-		vty_out(vty, " EIGRP not configured on this interface\n");
-		return CMD_SUCCESS;
-	}
-
-	if ((ei->params.auth_keychain != NULL)
-	    && (strcmp(ei->params.auth_keychain, argv[5]->arg) == 0)) {
-		free(ei->params.auth_keychain);
-		ei->params.auth_keychain = NULL;
-	} else
+			ei->params.auth_keychain = strdup(keychain->name);
+	} else {
 		vty_out(vty,
-			"Key chain with specified name not configured on interface\n");
+			"Key chain with specified name not found\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
 
 	return CMD_SUCCESS;
 }
@@ -1090,7 +1064,7 @@ DEFUN (eigrp_redistribute_source_metric,
 DEFUN (no_eigrp_redistribute_source_metric,
        no_eigrp_redistribute_source_metric_cmd,
        "no redistribute " FRR_REDIST_STR_EIGRPD
-       " metric (1-4294967295) (0-4294967295) (0-255) (1-255) (1-65535)",
+       " [metric (1-4294967295) (0-4294967295) (0-255) (1-255) (1-65535)]",
        "Disable\n"
        REDIST_STR
        FRR_REDIST_HELP_STR_EIGRPD
@@ -1125,7 +1099,7 @@ DEFUN (eigrp_variance,
        "Metric variance multiplier\n")
 {
 	struct eigrp *eigrp;
-	u_char variance;
+	uint8_t variance;
 
 	eigrp = eigrp_lookup();
 	if (eigrp == NULL) {
@@ -1169,7 +1143,7 @@ DEFUN (eigrp_maximum_paths,
        "Number of paths\n")
 {
 	struct eigrp *eigrp;
-	u_char max;
+	uint8_t max;
 
 	eigrp = eigrp_lookup();
 	if (eigrp == NULL) {
@@ -1339,8 +1313,7 @@ DEFUN (clear_ip_eigrp_neighbors_IP,
 	struct in_addr nbr_addr;
 
 	if (!inet_aton(argv[4]->arg, &nbr_addr)) {
-		vty_out(vty, "Unable to parse %s",
-			argv[4]->arg);
+		vty_out(vty, "Unable to parse %s", argv[4]->arg);
 		return CMD_WARNING;
 	}
 
@@ -1446,8 +1419,7 @@ DEFUN (clear_ip_eigrp_neighbors_IP_soft,
 	struct in_addr nbr_addr;
 
 	if (!inet_aton(argv[4]->arg, &nbr_addr)) {
-		vty_out(vty, "Unable to parse: %s",
-			argv[4]->arg);
+		vty_out(vty, "Unable to parse: %s", argv[4]->arg);
 		return CMD_WARNING;
 	}
 
@@ -1545,7 +1517,6 @@ void eigrp_vty_if_init(void)
 	install_element(INTERFACE_NODE, &eigrp_authentication_mode_cmd);
 	install_element(INTERFACE_NODE, &no_eigrp_authentication_mode_cmd);
 	install_element(INTERFACE_NODE, &eigrp_authentication_keychain_cmd);
-	install_element(INTERFACE_NODE, &no_eigrp_authentication_keychain_cmd);
 
 	/*EIGRP Summarization commands*/
 	install_element(INTERFACE_NODE, &eigrp_ip_summary_address_cmd);

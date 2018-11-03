@@ -23,7 +23,7 @@
 
 #include "command.h"
 #include "prefix.h"
-#include "table.h"
+#include "agg_table.h"
 #include "stream.h"
 #include "memory.h"
 #include "routemap.h"
@@ -37,7 +37,7 @@
 struct zclient *zclient = NULL;
 
 /* Send ECMP routes to zebra. */
-static void ripng_zebra_ipv6_send(struct route_node *rp, u_char cmd)
+static void ripng_zebra_ipv6_send(struct agg_node *rp, uint8_t cmd)
 {
 	struct list *list = (struct list *)rp->info;
 	struct zapi_route api;
@@ -48,7 +48,6 @@ static void ripng_zebra_ipv6_send(struct route_node *rp, u_char cmd)
 
 	memset(&api, 0, sizeof(api));
 	api.vrf_id = VRF_DEFAULT;
-	api.nh_vrf_id = VRF_DEFAULT;
 	api.type = ZEBRA_ROUTE_RIPNG;
 	api.safi = SAFI_UNICAST;
 	api.prefix = rp->p;
@@ -58,6 +57,7 @@ static void ripng_zebra_ipv6_send(struct route_node *rp, u_char cmd)
 		if (count >= MULTIPATH_NUM)
 			break;
 		api_nh = &api.nexthops[count];
+		api_nh->vrf_id = VRF_DEFAULT;
 		api_nh->gate.ipv6 = rinfo->nexthop;
 		api_nh->ifindex = rinfo->ifindex;
 		api_nh->type = NEXTHOP_TYPE_IPV6_IFINDEX;
@@ -100,13 +100,13 @@ static void ripng_zebra_ipv6_send(struct route_node *rp, u_char cmd)
 }
 
 /* Add/update ECMP routes to zebra. */
-void ripng_zebra_ipv6_add(struct route_node *rp)
+void ripng_zebra_ipv6_add(struct agg_node *rp)
 {
 	ripng_zebra_ipv6_send(rp, ZEBRA_ROUTE_ADD);
 }
 
 /* Delete ECMP routes from zebra. */
-void ripng_zebra_ipv6_delete(struct route_node *rp)
+void ripng_zebra_ipv6_delete(struct agg_node *rp)
 {
 	ripng_zebra_ipv6_send(rp, ZEBRA_ROUTE_DELETE);
 }

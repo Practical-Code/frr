@@ -53,11 +53,17 @@
 #include "isisd/isis_routemap.h"
 #include "isisd/isis_zebra.h"
 #include "isisd/isis_te.h"
+#include "isisd/isis_errors.h"
+#include "isisd/isis_vty_common.h"
+#include "isisd/isis_bfd.h"
+#include "isisd/isis_lsp.h"
+#include "isisd/isis_mt.h"
 
 /* Default configuration file name */
 #define ISISD_DEFAULT_CONFIG "isisd.conf"
 /* Default vty port */
 #define ISISD_VTY_PORT       2608
+#define FABRICD_VTY_PORT     2618
 
 /* isisd privileges */
 zebra_capabilities_t _caps_p[] = {ZCAP_NET_RAW, ZCAP_BIND};
@@ -103,7 +109,7 @@ static __attribute__((__noreturn__)) void terminate(int i)
 
 void sighup(void)
 {
-	zlog_err("SIGHUP/reload is not implemented for isisd");
+	zlog_notice("SIGHUP/reload is not implemented for isisd");
 	return;
 }
 
@@ -144,9 +150,19 @@ struct quagga_signal_t isisd_signals[] = {
 	},
 };
 
+static const struct frr_yang_module_info *isisd_yang_modules[] = {
+	&frr_interface_info,
+};
+
+#ifdef FABRICD
+FRR_DAEMON_INFO(fabricd, OPEN_FABRIC, .vty_port = FABRICD_VTY_PORT,
+
+		.proghelp = "Implementation of the OpenFabric routing protocol.",
+#else
 FRR_DAEMON_INFO(isisd, ISIS, .vty_port = ISISD_VTY_PORT,
 
 		.proghelp = "Implementation of the IS-IS routing protocol.",
+#endif
 		.copyright =
 			"Copyright (c) 2001-2002 Sampo Saaristo,"
 			" Ofer Wald and Hannes Gredler",
@@ -154,7 +170,8 @@ FRR_DAEMON_INFO(isisd, ISIS, .vty_port = ISISD_VTY_PORT,
 		.signals = isisd_signals,
 		.n_signals = array_size(isisd_signals),
 
-		.privs = &isisd_privs, )
+		.privs = &isisd_privs, .yang_modules = isisd_yang_modules,
+		.n_yang_modules = array_size(isisd_yang_modules), )
 
 /*
  * Main routine of isisd. Parse arguments and handle IS-IS state machine.
@@ -163,7 +180,11 @@ int main(int argc, char **argv, char **envp)
 {
 	int opt;
 
+#ifdef FABRICD
+	frr_preinit(&fabricd_di, argc, argv);
+#else
 	frr_preinit(&isisd_di, argc, argv);
+#endif
 	frr_opt_add("", longopts, "");
 
 	/* Command line argument treatment. */
@@ -189,20 +210,25 @@ int main(int argc, char **argv, char **envp)
 	/*
 	 *  initializations
 	 */
+	isis_error_init();
 	access_list_init();
-	vrf_init(NULL, NULL, NULL, NULL);
+	vrf_init(NULL, NULL, NULL, NULL, NULL);
 	prefix_list_init();
 	isis_init();
 	isis_circuit_init();
+	isis_vty_init();
 	isis_spf_cmds_init();
 	isis_redist_init();
 	isis_route_map_init();
 	isis_mpls_te_init();
+	lsp_init();
+	mt_init();
 
 	/* create the global 'isis' instance */
 	isis_new(1);
 
 	isis_zebra_init(master);
+	isis_bfd_init();
 
 	frr_config_fork();
 	frr_run(master);

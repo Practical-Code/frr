@@ -51,7 +51,6 @@ uint32_t installed_routes = 0;
 uint32_t removed_routes = 0;
 
 zebra_capabilities_t _caps_p[] = {
-	ZCAP_NET_RAW, ZCAP_BIND, ZCAP_NET_ADMIN,
 };
 
 struct zebra_privs_t sharp_privs = {
@@ -112,6 +111,9 @@ struct quagga_signal_t sharp_signals[] = {
 
 #define SHARP_VTY_PORT 2614
 
+static const struct frr_yang_module_info *sharpd_yang_modules[] = {
+};
+
 FRR_DAEMON_INFO(sharpd, SHARP, .vty_port = SHARP_VTY_PORT,
 
 		.proghelp = "Implementation of a Sharp of routes daemon.",
@@ -119,7 +121,8 @@ FRR_DAEMON_INFO(sharpd, SHARP, .vty_port = SHARP_VTY_PORT,
 		.signals = sharp_signals,
 		.n_signals = array_size(sharp_signals),
 
-		.privs = &sharp_privs, )
+		.privs = &sharp_privs, .yang_modules = sharpd_yang_modules,
+		.n_yang_modules = array_size(sharpd_yang_modules), )
 
 extern void sharp_vty_init(void);
 
@@ -147,7 +150,10 @@ int main(int argc, char **argv, char **envp)
 
 	master = frr_init();
 
-	vrf_init(NULL, NULL, NULL, NULL);
+	vrf_init(NULL, NULL, NULL, NULL, NULL);
+
+	access_list_init();
+	route_map_init();
 
 	sharp_zebra_init();
 

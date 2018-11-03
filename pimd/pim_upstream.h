@@ -137,7 +137,6 @@ struct pim_upstream {
 	int64_t state_transition; /* Record current state uptime */
 };
 
-void pim_upstream_free(struct pim_upstream *up);
 struct pim_upstream *pim_upstream_find(struct pim_instance *pim,
 				       struct prefix_sg *sg);
 struct pim_upstream *pim_upstream_find_or_add(struct prefix_sg *sg,
@@ -224,5 +223,5 @@ void pim_upstream_spt_prefix_list_update(struct pim_instance *pim,
 					 struct prefix_list *pl);
 
 unsigned int pim_upstream_hash_key(void *arg);
-int pim_upstream_equal(const void *arg1, const void *arg2);
+bool pim_upstream_equal(const void *arg1, const void *arg2);
 #endif /* PIM_UPSTREAM_H */

@@ -27,11 +27,13 @@
 #include "ioctl.h"
 #include "log.h"
 #include "privs.h"
+#include "lib_errors.h"
 
 #include "vty.h"
 #include "zebra/rib.h"
 #include "zebra/rt.h"
 #include "zebra/interface.h"
+#include "zebra/zebra_errors.h"
 
 #ifndef SUNOS_5
 
@@ -48,27 +50,49 @@ void ifreq_set_name(struct ifreq *ifreq, struct interface *ifp)
 }
 
 /* call ioctl system call */
-int if_ioctl(u_long request, caddr_t buffer)
+int if_ioctl(unsigned long request, caddr_t buffer)
 {
 	int sock;
 	int ret;
 	int err = 0;
 
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("Can't raise privileges");
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock < 0) {
-		int save_errno = errno;
-		if (zserv_privs.change(ZPRIVS_LOWER))
-			zlog_err("Can't lower privileges");
-		zlog_err("Cannot create UDP socket: %s",
-			 safe_strerror(save_errno));
-		exit(1);
+	frr_elevate_privs(&zserv_privs) {
+		sock = socket(AF_INET, SOCK_DGRAM, 0);
+		if (sock < 0) {
+			zlog_err("Cannot create UDP socket: %s",
+				 safe_strerror(errno));
+			exit(1);
+		}
+		if ((ret = ioctl(sock, request, buffer)) < 0)
+			err = errno;
 	}
-	if ((ret = ioctl(sock, request, buffer)) < 0)
-		err = errno;
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("Can't lower privileges");
+	close(sock);
+
+	if (ret < 0) {
+		errno = err;
+		return ret;
+	}
+	return 0;
+}
+
+/* call ioctl system call */
+int vrf_if_ioctl(unsigned long request, caddr_t buffer, vrf_id_t vrf_id)
+{
+	int sock;
+	int ret;
+	int err = 0;
+
+	frr_elevate_privs(&zserv_privs) {
+		sock = vrf_socket(AF_INET, SOCK_DGRAM, 0, vrf_id, NULL);
+		if (sock < 0) {
+			zlog_err("Cannot create UDP socket: %s",
+				 safe_strerror(errno));
+			exit(1);
+		}
+		ret = vrf_ioctl(vrf_id, sock, request, buffer);
+		if (ret < 0)
+			err = errno;
+	}
 	close(sock);
 
 	if (ret < 0) {
@@ -79,28 +103,23 @@ int if_ioctl(u_long request, caddr_t buffer)
 }
 
 #ifndef HAVE_NETLINK
-static int if_ioctl_ipv6(u_long request, caddr_t buffer)
+static int if_ioctl_ipv6(unsigned long request, caddr_t buffer)
 {
 	int sock;
 	int ret;
 	int err = 0;
 
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("Can't raise privileges");
-	sock = socket(AF_INET6, SOCK_DGRAM, 0);
-	if (sock < 0) {
-		int save_errno = errno;
-		if (zserv_privs.change(ZPRIVS_LOWER))
-			zlog_err("Can't lower privileges");
-		zlog_err("Cannot create IPv6 datagram socket: %s",
-			 safe_strerror(save_errno));
-		exit(1);
-	}
+	frr_elevate_privs(&zserv_privs) {
+		sock = socket(AF_INET6, SOCK_DGRAM, 0);
+		if (sock < 0) {
+			zlog_err("Cannot create IPv6 datagram socket: %s",
+				 safe_strerror(errno));
+			exit(1);
+		}
 
-	if ((ret = ioctl(sock, request, buffer)) < 0)
-		err = errno;
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("Can't lower privileges");
+		if ((ret = ioctl(sock, request, buffer)) < 0)
+			err = errno;
+	}
 	close(sock);
 
 	if (ret < 0) {
@@ -122,7 +141,7 @@ void if_get_metric(struct interface *ifp)
 
 	ifreq_set_name(&ifreq, ifp);
 
-	if (if_ioctl(SIOCGIFMETRIC, (caddr_t)&ifreq) < 0)
+	if (vrf_if_ioctl(SIOCGIFMETRIC, (caddr_t)&ifreq, ifp->vrf_id) < 0)
 		return;
 	ifp->metric = ifreq.ifr_metric;
 	if (ifp->metric == 0)
@@ -140,7 +159,7 @@ void if_get_mtu(struct interface *ifp)
 	ifreq_set_name(&ifreq, ifp);
 
 #if defined(SIOCGIFMTU)
-	if (if_ioctl(SIOCGIFMTU, (caddr_t)&ifreq) < 0) {
+	if (vrf_if_ioctl(SIOCGIFMTU, (caddr_t)&ifreq, ifp->vrf_id) < 0) {
 		zlog_info("Can't lookup mtu by ioctl(SIOCGIFMTU)");
 		ifp->mtu6 = ifp->mtu = -1;
 		return;
@@ -376,10 +395,11 @@ void if_get_flags(struct interface *ifp)
 
 	ifreq_set_name(&ifreq, ifp);
 
-	ret = if_ioctl(SIOCGIFFLAGS, (caddr_t)&ifreq);
+	ret = vrf_if_ioctl(SIOCGIFFLAGS, (caddr_t)&ifreq, ifp->vrf_id);
 	if (ret < 0) {
-		zlog_err("if_ioctl(SIOCGIFFLAGS) failed: %s",
-			 safe_strerror(errno));
+		flog_err_sys(EC_LIB_SYSTEM_CALL,
+			     "vrf_if_ioctl(SIOCGIFFLAGS) failed: %s",
+			     safe_strerror(errno));
 		return;
 	}
 #ifdef HAVE_BSD_LINK_DETECT /* Detect BSD link-state at start-up */
@@ -396,8 +416,9 @@ void if_get_flags(struct interface *ifp)
 
 		/* Seems not all interfaces implement this ioctl */
 		if (if_ioctl(SIOCGIFMEDIA, (caddr_t)&ifmr) < 0)
-			zlog_err("if_ioctl(SIOCGIFMEDIA) failed: %s",
-				 safe_strerror(errno));
+			flog_err_sys(EC_LIB_SYSTEM_CALL,
+				     "if_ioctl(SIOCGIFMEDIA) failed: %s",
+				     safe_strerror(errno));
 		else if (ifmr.ifm_status & IFM_AVALID) /* Link state is valid */
 		{
 			if (ifmr.ifm_status & IFM_ACTIVE)
@@ -423,7 +444,7 @@ int if_set_flags(struct interface *ifp, uint64_t flags)
 	ifreq.ifr_flags = ifp->flags;
 	ifreq.ifr_flags |= flags;
 
-	ret = if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq);
+	ret = vrf_if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq, ifp->vrf_id);
 
 	if (ret < 0) {
 		zlog_info("can't set interface flags");
@@ -444,7 +465,7 @@ int if_unset_flags(struct interface *ifp, uint64_t flags)
 	ifreq.ifr_flags = ifp->flags;
 	ifreq.ifr_flags &= ~flags;
 
-	ret = if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq);
+	ret = vrf_if_ioctl(SIOCSIFFLAGS, (caddr_t)&ifreq, ifp->vrf_id);
 
 	if (ret < 0) {
 		zlog_info("can't unset interface flags");
@@ -458,7 +479,7 @@ int if_unset_flags(struct interface *ifp, uint64_t flags)
 /* linux/include/net/ipv6.h */
 struct in6_ifreq {
 	struct in6_addr ifr6_addr;
-	u_int32_t ifr6_prefixlen;
+	uint32_t ifr6_prefixlen;
 	int ifr6_ifindex;
 };
 #endif /* _LINUX_IN6_H */
@@ -466,14 +487,14 @@ struct in6_ifreq {
 int if_prefix_add_ipv6(struct interface *ifp, struct connected *ifc)
 {
 #ifdef HAVE_NETLINK
-	return kernel_address_add_ipv6 (ifp, ifc);
+	return kernel_address_add_ipv6(ifp, ifc);
 #endif /* HAVE_NETLINK */
 }
 
 int if_prefix_delete_ipv6(struct interface *ifp, struct connected *ifc)
 {
 #ifdef HAVE_NETLINK
-	return kernel_address_delete_ipv6 (ifp, ifc);
+	return kernel_address_delete_ipv6(ifp, ifc);
 #endif /* HAVE_NETLINK */
 }
 #else /* LINUX_IPV6 */

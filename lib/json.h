@@ -23,6 +23,20 @@
 
 #if defined(HAVE_JSON_C_JSON_H)
 #include <json-c/json.h>
+
+/*
+ * FRR style JSON iteration.
+ * Usage: JSON_FOREACH(...) { ... }
+ */
+#define JSON_FOREACH(jo, joi, join)                                            \
+	/* struct json_object *jo; */                                          \
+	/* struct json_object_iterator joi; */                                 \
+	/* struct json_object_iterator join; */                                \
+	for ((joi) = json_object_iter_begin((jo)),                             \
+	    (join) = json_object_iter_end((jo));                               \
+	     json_object_iter_equal(&(joi), &(join)) == 0;                     \
+	     json_object_iter_next(&(joi)))
+
 #else
 #include <json/json.h>
 
@@ -38,7 +52,7 @@ extern int json_object_object_get_ex(struct json_object *obj, const char *key,
 
 #include "command.h"
 
-extern int use_json(const int argc, struct cmd_token *argv[]);
+extern bool use_json(const int argc, struct cmd_token *argv[]);
 extern void json_object_string_add(struct json_object *obj, const char *key,
 				   const char *s);
 extern void json_object_int_add(struct json_object *obj, const char *key,

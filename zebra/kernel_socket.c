@@ -39,6 +39,7 @@
 #include "rib.h"
 #include "privs.h"
 #include "vrf.h"
+#include "lib_errors.h"
 
 #include "zebra/rt.h"
 #include "zebra/interface.h"
@@ -46,6 +47,8 @@
 #include "zebra/debug.h"
 #include "zebra/kernel_socket.h"
 #include "zebra/rib.h"
+#include "zebra/zebra_errors.h"
+#include "zebra/zebra_ptm.h"
 
 extern struct zebra_privs_t zserv_privs;
 
@@ -168,7 +171,7 @@ static inline void rta_copy(union sockunion *dest, caddr_t src)
 
 #define RTA_NAME_GET(DEST, RTA, RTMADDRS, PNT, LEN)                            \
 	if ((RTMADDRS) & (RTA)) {                                              \
-		u_char *pdest = (u_char *)(DEST);                              \
+		uint8_t *pdest = (uint8_t *)(DEST);                            \
 		int len = SAROUNDUP((PNT));                                    \
 		struct sockaddr_dl *sdl = (struct sockaddr_dl *)(PNT);         \
 		if (IS_ZEBRA_DEBUG_KERNEL)                                     \
@@ -324,7 +327,7 @@ static int ifan_read(struct if_announcemsghdr *ifan)
 				__func__, ifan->ifan_index, ifan->ifan_name);
 
 		/* Create Interface */
-		ifp = if_get_by_name(ifan->ifan_name, VRF_DEFAULT, 0);
+		ifp = if_get_by_name(ifan->ifan_name, VRF_DEFAULT);
 		if_set_index(ifp, ifan->ifan_index);
 
 		if_get_metric(ifp);
@@ -407,7 +410,8 @@ int ifm_read(struct if_msghdr *ifm)
 
 	/* paranoia: sanity check structure */
 	if (ifm->ifm_msglen < sizeof(struct if_msghdr)) {
-		zlog_err("ifm_read: ifm->ifm_msglen %d too short\n",
+		flog_err(EC_ZEBRA_NETLINK_LENGTH_ERROR,
+			 "ifm_read: ifm->ifm_msglen %d too short\n",
 			 ifm->ifm_msglen);
 		return -1;
 	}
@@ -466,7 +470,7 @@ int ifm_read(struct if_msghdr *ifm)
 		if (ifnlen && (strncmp(ifp->name, ifname, IFNAMSIZ) != 0)) {
 			if (IS_ZEBRA_DEBUG_KERNEL)
 				zlog_debug(
-					"%s: ifp name %s doesnt match sdl name %s",
+					"%s: ifp name %s doesn't match sdl name %s",
 					__func__, ifp->name, ifname);
 			ifp = NULL;
 		}
@@ -499,8 +503,8 @@ int ifm_read(struct if_msghdr *ifm)
 		 * RTA_IFP) is required.
 		 */
 		if (!ifnlen) {
-			zlog_warn("Interface index %d (new) missing ifname\n",
-				  ifm->ifm_index);
+			zlog_debug("Interface index %d (new) missing ifname\n",
+				   ifm->ifm_index);
 			return -1;
 		}
 
@@ -583,7 +587,7 @@ int ifm_read(struct if_msghdr *ifm)
 	 */
 	{
 		if (ifp->ifindex != ifm->ifm_index) {
-			zlog_warn(
+			zlog_debug(
 				"%s: index mismatch, ifname %s, ifp index %d, "
 				"ifm index %d",
 				__func__, ifp->name, ifp->ifindex,
@@ -706,7 +710,7 @@ static void ifam_read_mesg(struct ifa_msghdr *ifm, union sockunion *addr,
 
 	/* Assert read up end point matches to end point */
 	if (pnt != end)
-		zlog_warn("ifam_read() doesn't read all socket data");
+		zlog_debug("ifam_read() doesn't read all socket data");
 }
 
 /* Interface's address information get. */
@@ -725,7 +729,8 @@ int ifam_read(struct ifa_msghdr *ifam)
 	ifam_read_mesg(ifam, &addr, &mask, &brd, ifname, &ifnlen);
 
 	if ((ifp = if_lookup_by_index(ifam->ifam_index, VRF_DEFAULT)) == NULL) {
-		zlog_warn("%s: no interface for ifname %s, index %d", __func__,
+		flog_warn(EC_ZEBRA_UNKNOWN_INTERFACE,
+			  "%s: no interface for ifname %s, index %d", __func__,
 			  ifname, ifam->ifam_index);
 		return -1;
 	}
@@ -771,10 +776,11 @@ int ifam_read(struct ifa_msghdr *ifam)
 
 		if (ifam->ifam_type == RTM_NEWADDR)
 			connected_add_ipv6(ifp, flags, &addr.sin6.sin6_addr,
+					   NULL,
 					   ip6_masklen(mask.sin6.sin6_addr),
 					   (isalias ? ifname : NULL));
 		else
-			connected_delete_ipv6(ifp, &addr.sin6.sin6_addr,
+			connected_delete_ipv6(ifp, &addr.sin6.sin6_addr, NULL,
 					      ip6_masklen(mask.sin6.sin6_addr));
 		break;
 	default:
@@ -818,10 +824,10 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 
 	/* rt_msghdr version check. */
 	if (rtm->rtm_version != RTM_VERSION)
-		zlog_warn(
-			"Routing message version different %d should be %d."
-			"This may cause problem\n",
-			rtm->rtm_version, RTM_VERSION);
+		flog_warn(EC_ZEBRA_RTM_VERSION_MISMATCH,
+			  "Routing message version different %d should be %d."
+			  "This may cause problem\n",
+			  rtm->rtm_version, RTM_VERSION);
 
 	/* Be sure structure is cleared */
 	memset(dest, 0, sizeof(union sockunion));
@@ -856,7 +862,7 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 
 	/* Assert read up to the end of pointer. */
 	if (pnt != end)
-		zlog_warn("rtm_read() doesn't read all socket data.");
+		zlog_debug("rtm_read() doesn't read all socket data.");
 
 	return rtm->rtm_flags;
 }
@@ -864,7 +870,7 @@ static int rtm_read_mesg(struct rt_msghdr *rtm, union sockunion *dest,
 void rtm_read(struct rt_msghdr *rtm)
 {
 	int flags;
-	u_char zebra_flags;
+	uint8_t zebra_flags;
 	union sockunion dest, mask, gate;
 	char ifname[INTERFACE_NAMSIZ + 1];
 	short ifnlen = 0;
@@ -907,6 +913,8 @@ void rtm_read(struct rt_msghdr *rtm)
 		SET_FLAG(zebra_flags, ZEBRA_FLAG_STATIC);
 
 	memset(&nh, 0, sizeof(nh));
+
+	nh.vrf_id = VRF_DEFAULT;
 	/* This is a reject or blackhole route */
 	if (flags & RTF_REJECT) {
 		nh.type = NEXTHOP_TYPE_BLACKHOLE;
@@ -1040,7 +1048,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		if (rtm->rtm_type == RTM_CHANGE)
 			rib_delete(AFI_IP, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   NULL, 0, 0, true, NULL);
+				   NULL, 0, 0, 0, true);
 
 		if (!nh.type) {
 			nh.type = NEXTHOP_TYPE_IPV4;
@@ -1049,13 +1057,13 @@ void rtm_read(struct rt_msghdr *rtm)
 
 		if (rtm->rtm_type == RTM_GET || rtm->rtm_type == RTM_ADD
 		    || rtm->rtm_type == RTM_CHANGE)
-			rib_add(AFI_IP, SAFI_UNICAST, VRF_DEFAULT, VRF_DEFAULT,
+			rib_add(AFI_IP, SAFI_UNICAST, VRF_DEFAULT,
 				ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
 				&nh, 0, 0, 0, 0, 0);
 		else
 			rib_delete(AFI_IP, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   &nh, 0, 0, true, NULL);
+				   &nh, 0, 0, 0, true);
 	}
 	if (dest.sa.sa_family == AF_INET6) {
 		/* One day we might have a debug section here like one in the
@@ -1086,7 +1094,7 @@ void rtm_read(struct rt_msghdr *rtm)
 		if (rtm->rtm_type == RTM_CHANGE)
 			rib_delete(AFI_IP6, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   NULL, 0, 0, true, NULL);
+				   NULL, 0, 0, 0, true);
 
 		if (!nh.type) {
 			nh.type = ifindex ? NEXTHOP_TYPE_IPV6_IFINDEX
@@ -1097,13 +1105,13 @@ void rtm_read(struct rt_msghdr *rtm)
 
 		if (rtm->rtm_type == RTM_GET || rtm->rtm_type == RTM_ADD
 		    || rtm->rtm_type == RTM_CHANGE)
-			rib_add(AFI_IP6, SAFI_UNICAST, VRF_DEFAULT, VRF_DEFAULT,
+			rib_add(AFI_IP6, SAFI_UNICAST, VRF_DEFAULT,
 				ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
 				&nh, 0, 0, 0, 0, 0);
 		else
 			rib_delete(AFI_IP6, SAFI_UNICAST, VRF_DEFAULT,
 				   ZEBRA_ROUTE_KERNEL, 0, zebra_flags, &p, NULL,
-				   &nh, 0, 0, true, NULL);
+				   &nh, 0, 0, 0, true);
 	}
 }
 
@@ -1176,7 +1184,8 @@ int rtm_write(int message, union sockunion *dest, union sockunion *mask,
 			if (mask)
 				inet_ntop(AF_INET, &mask->sin.sin_addr,
 					  mask_buf, INET_ADDRSTRLEN);
-			zlog_warn(
+			flog_warn(
+				EC_ZEBRA_RTM_NO_GATEWAY,
 				"%s: %s/%s: gate == NULL and no gateway found for ifindex %d",
 				__func__, dest_buf, mask_buf, index);
 			return -1;
@@ -1195,7 +1204,7 @@ int rtm_write(int message, union sockunion *dest, union sockunion *mask,
 		msg.rtm.rtm_flags |= RTF_MPLS;
 
 		if (mpls->smpls.smpls_label
-		    != htonl(MPLS_IMP_NULL_LABEL << MPLS_LABEL_OFFSET))
+		    != htonl(MPLS_LABEL_IMPLICIT_NULL << MPLS_LABEL_OFFSET))
 			msg.rtm.rtm_mpls = MPLS_OP_PUSH;
 	}
 #endif
@@ -1244,8 +1253,8 @@ int rtm_write(int message, union sockunion *dest, union sockunion *mask,
 		if (errno == ESRCH)
 			return ZEBRA_ERR_RTNOEXIST;
 
-		zlog_warn("%s: write : %s (%d)", __func__, safe_strerror(errno),
-			  errno);
+		flog_err_sys(EC_LIB_SOCKET, "%s: write : %s (%d)", __func__,
+			     safe_strerror(errno), errno);
 		return ZEBRA_ERR_KERNEL;
 	}
 	return ZEBRA_ERR_NOERROR;
@@ -1327,8 +1336,8 @@ static int kernel_read(struct thread *thread)
 
 	if (nbytes <= 0) {
 		if (nbytes < 0 && errno != EWOULDBLOCK && errno != EAGAIN)
-			zlog_warn("routing socket error: %s",
-				  safe_strerror(errno));
+			flog_err_sys(EC_LIB_SOCKET, "routing socket error: %s",
+				     safe_strerror(errno));
 		return 0;
 	}
 
@@ -1344,7 +1353,7 @@ static int kernel_read(struct thread *thread)
 	 * can assume they have the whole message.
 	 */
 	if (rtm->rtm_msglen != nbytes) {
-		zlog_warn(
+		zlog_debug(
 			"kernel_read: rtm->rtm_msglen %d, nbytes %d, type %d\n",
 			rtm->rtm_msglen, nbytes, rtm->rtm_type);
 		return -1;
@@ -1379,15 +1388,12 @@ static int kernel_read(struct thread *thread)
 /* Make routing socket. */
 static void routing_socket(struct zebra_ns *zns)
 {
-	if (zserv_privs.change(ZPRIVS_RAISE))
-		zlog_err("routing_socket: Can't raise privileges");
-
-	routing_sock = socket(AF_ROUTE, SOCK_RAW, 0);
+	frr_elevate_privs(&zserv_privs) {
+		routing_sock = ns_socket(AF_ROUTE, SOCK_RAW, 0, zns->ns_id);
+	}
 
 	if (routing_sock < 0) {
-		if (zserv_privs.change(ZPRIVS_LOWER))
-			zlog_err("routing_socket: Can't lower privileges");
-		zlog_warn("Can't init kernel routing socket");
+		flog_err_sys(EC_LIB_SOCKET, "Can't init kernel routing socket");
 		return;
 	}
 
@@ -1397,9 +1403,6 @@ static void routing_socket(struct zebra_ns *zns)
 	 */
 	/*if (fcntl (routing_sock, F_SETFL, O_NONBLOCK) < 0)
 	  zlog_warn ("Can't set O_NONBLOCK to routing socket");*/
-
-	if (zserv_privs.change(ZPRIVS_LOWER))
-		zlog_err("routing_socket: Can't lower privileges");
 
 	/* kernel_read needs rewrite. */
 	thread_add_read(zebrad.master, kernel_read, NULL, routing_sock, NULL);

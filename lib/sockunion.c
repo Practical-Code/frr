@@ -26,6 +26,7 @@
 #include "memory.h"
 #include "log.h"
 #include "jhash.h"
+#include "lib_errors.h"
 
 DEFINE_MTYPE_STATIC(LIB, SOCKUNION, "Socket union")
 
@@ -45,6 +46,9 @@ const char *inet_sutop(const union sockunion *su, char *str)
 int str2sockunion(const char *str, union sockunion *su)
 {
 	int ret;
+
+	if (str == NULL)
+		return -1;
 
 	memset(su, 0, sizeof(union sockunion));
 
@@ -136,9 +140,9 @@ int sockunion_socket(const union sockunion *su)
 	sock = socket(su->sa.sa_family, SOCK_STREAM, 0);
 	if (sock < 0) {
 		char buf[SU_ADDRSTRLEN];
-		zlog_warn("Can't make socket for %s : %s",
-			  sockunion_log(su, buf, SU_ADDRSTRLEN),
-			  safe_strerror(errno));
+		flog_err(EC_LIB_SOCKET, "Can't make socket for %s : %s",
+			 sockunion_log(su, buf, SU_ADDRSTRLEN),
+			 safe_strerror(errno));
 		return -1;
 	}
 
@@ -231,7 +235,8 @@ int sockunion_stream_socket(union sockunion *su)
 	sock = socket(su->sa.sa_family, SOCK_STREAM, 0);
 
 	if (sock < 0)
-		zlog_warn("can't make socket sockunion_stream_socket");
+		flog_err(EC_LIB_SOCKET,
+			 "can't make socket sockunion_stream_socket");
 
 	return sock;
 }
@@ -269,9 +274,9 @@ int sockunion_bind(int sock, union sockunion *su, unsigned short port,
 	ret = bind(sock, (struct sockaddr *)su, size);
 	if (ret < 0) {
 		char buf[SU_ADDRSTRLEN];
-		zlog_warn("can't bind socket for %s : %s",
-			  sockunion_log(su, buf, SU_ADDRSTRLEN),
-			  safe_strerror(errno));
+		flog_err(EC_LIB_SOCKET, "can't bind socket for %s : %s",
+			 sockunion_log(su, buf, SU_ADDRSTRLEN),
+			 safe_strerror(errno));
 	}
 
 	return ret;
@@ -285,7 +290,8 @@ int sockopt_reuseaddr(int sock)
 	ret = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (void *)&on,
 			 sizeof(on));
 	if (ret < 0) {
-		zlog_warn("can't set sockopt SO_REUSEADDR to socket %d", sock);
+		flog_err(EC_LIB_SOCKET,
+			 "can't set sockopt SO_REUSEADDR to socket %d", sock);
 		return -1;
 	}
 	return 0;
@@ -300,7 +306,8 @@ int sockopt_reuseport(int sock)
 	ret = setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, (void *)&on,
 			 sizeof(on));
 	if (ret < 0) {
-		zlog_warn("can't set sockopt SO_REUSEPORT to socket %d", sock);
+		flog_err(EC_LIB_SOCKET,
+			 "can't set sockopt SO_REUSEPORT to socket %d", sock);
 		return -1;
 	}
 	return 0;
@@ -321,8 +328,9 @@ int sockopt_ttl(int family, int sock, int ttl)
 		ret = setsockopt(sock, IPPROTO_IP, IP_TTL, (void *)&ttl,
 				 sizeof(int));
 		if (ret < 0) {
-			zlog_warn("can't set sockopt IP_TTL %d to socket %d",
-				  ttl, sock);
+			flog_err(EC_LIB_SOCKET,
+				 "can't set sockopt IP_TTL %d to socket %d",
+				 ttl, sock);
 			return -1;
 		}
 		return 0;
@@ -332,7 +340,8 @@ int sockopt_ttl(int family, int sock, int ttl)
 		ret = setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS,
 				 (void *)&ttl, sizeof(int));
 		if (ret < 0) {
-			zlog_warn(
+			flog_err(
+				EC_LIB_SOCKET,
 				"can't set sockopt IPV6_UNICAST_HOPS %d to socket %d",
 				ttl, sock);
 			return -1;
@@ -347,7 +356,7 @@ int sockopt_ttl(int family, int sock, int ttl)
  * Which on linux is a no-op since it is enabled by
  * default and on BSD it uses TCP_NOPUSH to do
  * the same thing( which it was not configured to
- * use).  This cleanup of the api occured on 8/1/17
+ * use).  This cleanup of the api occurred on 8/1/17
  * I imagine if after more than 1 year of no-one
  * complaining, and a major upgrade release we
  * can deprecate and remove this function call
@@ -362,14 +371,10 @@ int sockopt_mark_default(int sock, int mark, struct zebra_privs_t *cap)
 #ifdef SO_MARK
 	int ret;
 
-	if (cap->change(ZPRIVS_RAISE))
-		zlog_err("routing_socket: Can't raise privileges");
-
-	ret = setsockopt(sock, SOL_SOCKET, SO_MARK, &mark, sizeof(mark));
-
-	if (cap->change(ZPRIVS_LOWER))
-		zlog_err("routing_socket: Can't lower privileges");
-
+	frr_elevate_privs(cap) {
+		ret = setsockopt(sock, SOL_SOCKET, SO_MARK, &mark,
+				 sizeof(mark));
+	}
 	return ret;
 #else
 	return 0;
@@ -383,7 +388,8 @@ int sockopt_minttl(int family, int sock, int minttl)
 		int ret = setsockopt(sock, IPPROTO_IP, IP_MINTTL, &minttl,
 				     sizeof(minttl));
 		if (ret < 0)
-			zlog_warn(
+			flog_err(
+				EC_LIB_SOCKET,
 				"can't set sockopt IP_MINTTL to %d on socket %d: %s",
 				minttl, sock, safe_strerror(errno));
 		return ret;
@@ -394,7 +400,8 @@ int sockopt_minttl(int family, int sock, int minttl)
 		int ret = setsockopt(sock, IPPROTO_IPV6, IPV6_MINHOPCOUNT,
 				     &minttl, sizeof(minttl));
 		if (ret < 0)
-			zlog_warn(
+			flog_err(
+				EC_LIB_SOCKET,
 				"can't set sockopt IPV6_MINHOPCOUNT to %d on socket %d: %s",
 				minttl, sock, safe_strerror(errno));
 		return ret;
@@ -414,10 +421,10 @@ int sockopt_v6only(int family, int sock)
 		ret = setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&on,
 				 sizeof(int));
 		if (ret < 0) {
-			zlog_warn(
-				"can't set sockopt IPV6_V6ONLY "
-				"to socket %d",
-				sock);
+			flog_err(EC_LIB_SOCKET,
+				 "can't set sockopt IPV6_V6ONLY "
+				 "to socket %d",
+				 sock);
 			return -1;
 		}
 		return 0;
@@ -486,18 +493,18 @@ size_t sockunion_get_addrlen(const union sockunion *su)
 	return family2addrsize(sockunion_family(su));
 }
 
-const u_char *sockunion_get_addr(const union sockunion *su)
+const uint8_t *sockunion_get_addr(const union sockunion *su)
 {
 	switch (sockunion_family(su)) {
 	case AF_INET:
-		return (const u_char *)&su->sin.sin_addr.s_addr;
+		return (const uint8_t *)&su->sin.sin_addr.s_addr;
 	case AF_INET6:
-		return (const u_char *)&su->sin6.sin6_addr;
+		return (const uint8_t *)&su->sin6.sin6_addr;
 	}
 	return NULL;
 }
 
-void sockunion_set(union sockunion *su, int family, const u_char *addr,
+void sockunion_set(union sockunion *su, int family, const uint8_t *addr,
 		   size_t bytes)
 {
 	if (family2addrsize(family) != bytes)
@@ -532,8 +539,9 @@ union sockunion *sockunion_getsockname(int fd)
 
 	ret = getsockname(fd, (struct sockaddr *)&name, &len);
 	if (ret < 0) {
-		zlog_warn("Can't get local address and port by getsockname: %s",
-			  safe_strerror(errno));
+		flog_err(EC_LIB_SOCKET,
+			 "Can't get local address and port by getsockname: %s",
+			 safe_strerror(errno));
 		return NULL;
 	}
 
@@ -568,8 +576,8 @@ union sockunion *sockunion_getpeername(int fd)
 	len = sizeof name;
 	ret = getpeername(fd, (struct sockaddr *)&name, &len);
 	if (ret < 0) {
-		zlog_warn("Can't get remote address and port: %s",
-			  safe_strerror(errno));
+		flog_err(EC_LIB_SOCKET, "Can't get remote address and port: %s",
+			 safe_strerror(errno));
 		return NULL;
 	}
 
@@ -622,10 +630,10 @@ static int in6addr_cmp(const struct in6_addr *addr1,
 		       const struct in6_addr *addr2)
 {
 	unsigned int i;
-	const u_char *p1, *p2;
+	const uint8_t *p1, *p2;
 
-	p1 = (const u_char *)addr1;
-	p2 = (const u_char *)addr2;
+	p1 = (const uint8_t *)addr1;
+	p2 = (const uint8_t *)addr2;
 
 	for (i = 0; i < sizeof(struct in6_addr); i++) {
 		if (p1[i] > p2[i])

@@ -60,6 +60,7 @@
 #include "log.h"
 #include "vty.h"
 #include "skiplist.h"
+#include "lib_errors.h"
 
 DEFINE_MTYPE_STATIC(LIB, SKIP_LIST, "Skip List")
 DEFINE_MTYPE_STATIC(LIB, SKIP_LIST_NODE, "Skip Node")
@@ -182,7 +183,8 @@ int skiplist_insert(register struct skiplist *l, register void *key,
 
 	/* DEBUG */
 	if (!key) {
-		zlog_err("%s: key is 0, value is %p", __func__, value);
+		flog_err(EC_LIB_DEVELOPMENT, "%s: key is 0, value is %p",
+			 __func__, value);
 	}
 
 	p = l->header;
@@ -200,6 +202,7 @@ int skiplist_insert(register struct skiplist *l, register void *key,
 	}
 
 	k = randomLevel();
+	assert(k >= 0);
 	if (k > l->level) {
 		k = ++l->level;
 		update[k] = l->header;

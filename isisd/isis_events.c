@@ -48,6 +48,7 @@
 #include "isisd/isis_csm.h"
 #include "isisd/isis_events.h"
 #include "isisd/isis_spf.h"
+#include "isisd/isis_errors.h"
 
 /* debug isis-spf spf-events
  4w4d: ISIS-Spf (tlt): L2 SPF needed, new adjacency, from 0x609229F4
@@ -133,7 +134,7 @@ static void circuit_resign_level(struct isis_circuit *circuit, int level)
 		circuit->lsp_regenerate_pending[idx] = 0;
 		circuit->u.bc.run_dr_elect[idx] = 0;
 		if (circuit->u.bc.lan_neighs[idx] != NULL)
-			list_delete_and_null(&circuit->u.bc.lan_neighs[idx]);
+			list_delete(&circuit->u.bc.lan_neighs[idx]);
 	}
 
 	return;
@@ -156,9 +157,9 @@ void isis_circuit_is_type_set(struct isis_circuit *circuit, int newtype)
 		return; /* No change */
 
 	if (!(newtype & circuit->area->is_type)) {
-		zlog_err(
-			"ISIS-Evt (%s) circuit type change - invalid level %s because"
-			" area is %s",
+		flog_err(
+			EC_ISIS_CONFIG,
+			"ISIS-Evt (%s) circuit type change - invalid level %s because area is %s",
 			circuit->area->area_tag, circuit_t2string(newtype),
 			circuit_t2string(circuit->area->is_type));
 		return;
@@ -215,25 +216,6 @@ void isis_circuit_is_type_set(struct isis_circuit *circuit, int newtype)
  *
  * ***********************************************************************/
 
-void isis_event_adjacency_state_change(struct isis_adjacency *adj, int newstate)
-{
-	/* adjacency state change event.
-	 * - the only proto-type was supported */
-
-	/* invalid arguments */
-	if (!adj || !adj->circuit || !adj->circuit->area)
-		return;
-
-	if (isis->debugs & DEBUG_EVENTS)
-		zlog_debug("ISIS-Evt (%s) Adjacency State change",
-			   adj->circuit->area->area_tag);
-
-	/* LSP generation again */
-	lsp_regenerate_schedule(adj->circuit->area, IS_LEVEL_1 | IS_LEVEL_2, 0);
-
-	return;
-}
-
 /* events supporting code */
 
 int isis_event_dis_status_change(struct thread *thread)
@@ -256,7 +238,7 @@ int isis_event_dis_status_change(struct thread *thread)
 }
 
 void isis_event_auth_failure(char *area_tag, const char *error_string,
-			     u_char *sysid)
+			     uint8_t *sysid)
 {
 	if (isis->debugs & DEBUG_EVENTS)
 		zlog_debug("ISIS-Evt (%s) Authentication failure %s from %s",
