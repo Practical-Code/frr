@@ -80,11 +80,12 @@ int main(int argc, char **argv)
 	/* Library inits. */
 	cmd_init(1);
 	cmd_hostname_set("test");
+	cmd_domainname_set("test.domain");
 
 	vty_init(master);
 	memory_init();
 	yang_init();
-	nb_init(NULL, 0);
+	nb_init(master, NULL, 0);
 
 	test_init(argc, argv);
 

@@ -172,7 +172,7 @@ static void sigint(void)
 		work_queue_free_and_null(&zebrad.lsp_process_q);
 	vrf_terminate();
 
-	ns_walk_func(zebra_ns_disabled);
+	ns_walk_func(zebra_ns_early_shutdown);
 	zebra_ns_notify_close();
 
 	access_list_reset();
@@ -195,6 +195,9 @@ static void sigint(void)
 int zebra_finalize(struct thread *dummy)
 {
 	zlog_info("Zebra final shutdown");
+
+	/* Final shutdown of ns resources */
+	ns_walk_func(zebra_ns_final_shutdown);
 
 	/* Stop dplane thread and finish any cleanup */
 	zebra_dplane_shutdown();
@@ -256,6 +259,7 @@ int main(int argc, char **argv)
 {
 	// int batch_mode = 0;
 	char *zserv_path = NULL;
+	char *vrf_default_name_configured = NULL;
 	/* Socket to external label manager */
 	char *lblmgr_path = NULL;
 	struct sockaddr_storage dummy;
@@ -336,7 +340,7 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'o':
-			vrf_set_default_name(optarg);
+			vrf_default_name_configured = optarg;
 			break;
 		case 'z':
 			zserv_path = optarg;
@@ -387,8 +391,10 @@ int main(int argc, char **argv)
 		}
 	}
 
-	vty_config_lockless();
 	zebrad.master = frr_init();
+
+	/* Initialize pthread library */
+	frr_pthread_init();
 
 	/* Zebra related initialize. */
 	zebra_router_init();
@@ -402,7 +408,9 @@ int main(int argc, char **argv)
 	 * Initialize NS( and implicitly the VRF module), and make kernel
 	 * routing socket. */
 	zebra_ns_init();
-
+	if (vrf_default_name_configured)
+		vrf_set_default_name(vrf_default_name_configured,
+				     true);
 	zebra_vty_init();
 	access_list_init();
 	prefix_list_init();
@@ -445,8 +453,8 @@ int main(int argc, char **argv)
 	/* Needed for BSD routing socket. */
 	pid = getpid();
 
-	/* Intialize pthread library */
-	frr_pthread_init();
+	/* Start dataplane system */
+	zebra_dplane_start();
 
 	/* Start Zebra API server */
 	zserv_start(zserv_path);

@@ -3226,33 +3226,29 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 
 		/* For network route-map updates. */
 		for (bn = bgp_table_top(bgp->route[afi][safi]); bn;
-		     bn = bgp_route_next(bn))
-			if ((bgp_static = bn->info) != NULL) {
-				if (bgp_static->rmap.name
-				    && (strcmp(rmap_name, bgp_static->rmap.name)
-					== 0)) {
-					bgp_static->rmap.map = map;
+		     bn = bgp_route_next(bn)) {
+			bgp_static = bgp_node_get_bgp_static_info(bn);
+			if (!bgp_static)
+				continue;
 
-					if (route_update)
-						if (!bgp_static->backdoor) {
-							if (bgp_debug_zebra(
-								    &bn->p))
-								zlog_debug(
-									"Processing route_map %s update on "
-									"static route %s",
-									rmap_name,
-									inet_ntop(
-										bn->p.family,
-										&bn->p.u.prefix,
-										buf,
-										INET6_ADDRSTRLEN));
-							bgp_static_update(
-								bgp, &bn->p,
-								bgp_static, afi,
-								safi);
-						}
-				}
+			if (!bgp_static->rmap.name
+			    || (strcmp(rmap_name, bgp_static->rmap.name) != 0))
+				continue;
+
+			bgp_static->rmap.map = map;
+
+			if (route_update && !bgp_static->backdoor) {
+				if (bgp_debug_zebra(&bn->p))
+					zlog_debug(
+						"Processing route_map %s update on static route %s",
+						rmap_name,
+						inet_ntop(bn->p.family,
+							  &bn->p.u.prefix, buf,
+							  INET6_ADDRSTRLEN));
+				bgp_static_update(bgp, &bn->p, bgp_static, afi,
+						  safi);
 			}
+		}
 	}
 
 	/* For redistribute route-map updates. */
@@ -3266,38 +3262,38 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 				continue;
 
 			for (ALL_LIST_ELEMENTS_RO(red_list, node, red)) {
-				if (red->rmap.name
-				    && (strcmp(rmap_name, red->rmap.name)
-					== 0)) {
-					red->rmap.map = map;
+				if (!red->rmap.name
+				    || (strcmp(rmap_name, red->rmap.name) != 0))
+					continue;
 
-					if (route_update) {
-						if (BGP_DEBUG(zebra, ZEBRA))
-							zlog_debug(
-								"Processing route_map %s update on "
-								"redistributed routes",
-								rmap_name);
+				red->rmap.map = map;
 
-						bgp_redistribute_resend(
-							bgp, afi, i,
+				if (!route_update)
+					continue;
+
+				if (BGP_DEBUG(zebra, ZEBRA))
+					zlog_debug(
+						"Processing route_map %s update on redistributed routes",
+						rmap_name);
+
+				bgp_redistribute_resend(bgp, afi, i,
 							red->instance);
-					}
-				}
 			}
 		}
 
 	/* for type5 command route-maps */
 	FOREACH_AFI_SAFI (afi, safi) {
-		if (bgp->adv_cmd_rmap[afi][safi].name
-		    && strcmp(rmap_name, bgp->adv_cmd_rmap[afi][safi].name)
-			       == 0) {
-			if (BGP_DEBUG(zebra, ZEBRA))
-				zlog_debug(
-					"Processing route_map %s update on advertise type5 route command",
-					rmap_name);
-			bgp_evpn_withdraw_type5_routes(bgp, afi, safi);
-			bgp_evpn_advertise_type5_routes(bgp, afi, safi);
-		}
+		if (!bgp->adv_cmd_rmap[afi][safi].name
+		    || strcmp(rmap_name, bgp->adv_cmd_rmap[afi][safi].name)
+			       != 0)
+			continue;
+
+		if (BGP_DEBUG(zebra, ZEBRA))
+			zlog_debug(
+				"Processing route_map %s update on advertise type5 route command",
+				rmap_name);
+		bgp_evpn_withdraw_type5_routes(bgp, afi, safi);
+		bgp_evpn_advertise_type5_routes(bgp, afi, safi);
 	}
 }
 
@@ -3438,7 +3434,7 @@ DEFUN (no_match_evpn_route_type,
 
 DEFUN (match_evpn_vni,
        match_evpn_vni_cmd,
-       "match evpn vni (1-16777215)",
+       "match evpn vni " CMD_VNI_RANGE,
        MATCH_STR
        EVPN_HELP_STR
        "Match VNI\n"
@@ -3450,7 +3446,7 @@ DEFUN (match_evpn_vni,
 
 DEFUN (no_match_evpn_vni,
        no_match_evpn_vni_cmd,
-       "no match evpn vni (1-16777215)",
+       "no match evpn vni " CMD_VNI_RANGE,
        NO_STR
        MATCH_STR
        EVPN_HELP_STR
@@ -4076,6 +4072,11 @@ DEFUN (no_set_aspath_exclude,
 	return ret;
 }
 
+ALIAS(no_set_aspath_exclude, no_set_aspath_exclude_all_cmd,
+      "no set as-path exclude",
+      NO_STR SET_STR
+      "Transform BGP AS_PATH attribute\n"
+      "Exclude from the as-path\n")
 
 DEFUN (set_community,
        set_community_cmd,
@@ -4965,6 +4966,7 @@ void bgp_route_map_init(void)
 	install_element(RMAP_NODE, &set_aspath_exclude_cmd);
 	install_element(RMAP_NODE, &no_set_aspath_prepend_cmd);
 	install_element(RMAP_NODE, &no_set_aspath_exclude_cmd);
+	install_element(RMAP_NODE, &no_set_aspath_exclude_all_cmd);
 	install_element(RMAP_NODE, &set_origin_cmd);
 	install_element(RMAP_NODE, &no_set_origin_cmd);
 	install_element(RMAP_NODE, &set_atomic_aggregate_cmd);

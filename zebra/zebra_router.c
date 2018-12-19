@@ -24,6 +24,7 @@
 #include "zebra_router.h"
 #include "zebra_memory.h"
 #include "zebra_pbr.h"
+#include "zebra_vxlan.h"
 
 struct zebra_router zrouter;
 
@@ -96,6 +97,7 @@ struct route_table *zebra_router_get_table(struct zebra_vrf *zvrf,
 	zrt = XCALLOC(MTYPE_ZEBRA_NS, sizeof(*zrt));
 	zrt->tableid = tableid;
 	zrt->afi = afi;
+	zrt->safi = safi;
 	zrt->ns_id = zvrf->zns->ns_id;
 	zrt->table =
 		(afi == AFI_IP6) ? srcdest_table_init() : route_table_init();
@@ -156,6 +158,7 @@ void zebra_router_terminate(void)
 		zebra_router_free_table(zrt);
 	}
 
+	zebra_vxlan_disable();
 	hash_clean(zrouter.rules_hash, zebra_pbr_rules_free);
 	hash_free(zrouter.rules_hash);
 
@@ -169,8 +172,7 @@ void zebra_router_terminate(void)
 
 void zebra_router_init(void)
 {
-	zrouter.l3vni_table = NULL;
-
+	zebra_vxlan_init();
 	zrouter.rules_hash = hash_create_size(8, zebra_pbr_rules_hash_key,
 					      zebra_pbr_rules_hash_equal,
 					      "Rules Hash");

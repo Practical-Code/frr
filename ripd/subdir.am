@@ -9,9 +9,6 @@ dist_examples_DATA += ripd/ripd.conf.sample
 vtysh_scan += \
 	$(top_srcdir)/ripd/rip_cli.c \
 	$(top_srcdir)/ripd/rip_debug.c \
-	$(top_srcdir)/ripd/rip_interface.c \
-	$(top_srcdir)/ripd/rip_offset.c \
-	$(top_srcdir)/ripd/rip_zebra.c \
 	$(top_srcdir)/ripd/ripd.c \
 	# end
 
@@ -51,10 +48,11 @@ ripd_ripd_LDADD = ripd/librip.a lib/libfrr.la @LIBCAP@
 ripd_ripd_SOURCES = \
 	ripd/rip_main.c \
 	# end
+nodist_ripd_ripd_SOURCES = \
+	yang/frr-ripd.yang.c \
+	# end
 
 ripd_ripd_snmp_la_SOURCES = ripd/rip_snmp.c
 ripd_ripd_snmp_la_CFLAGS = $(WERROR) $(SNMP_CFLAGS) -std=gnu99
 ripd_ripd_snmp_la_LDFLAGS = -avoid-version -module -shared -export-dynamic
 ripd_ripd_snmp_la_LIBADD = lib/libfrrsnmp.la
-
-EXTRA_DIST += ripd/RIPv2-MIB.txt

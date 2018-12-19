@@ -44,6 +44,13 @@ DECLARE_MTYPE(YANG_DATA)
 /* Maximum string length of an YANG value. */
 #define YANG_VALUE_MAXLEN 1024
 
+struct yang_module_embed {
+	struct yang_module_embed *next;
+	const char *mod_name, *mod_rev;
+	const char *data;
+	LYS_INFORMAT format;
+};
+
 struct yang_module {
 	RB_ENTRY(yang_module) entry;
 	const char *name;
@@ -62,12 +69,6 @@ struct yang_data {
 	/* XPath identifier of the data element. */
 	char xpath[XPATH_MAXLEN];
 
-	/*
-	 * Schema information (necessary to interpret certain values like
-	 * enums).
-	 */
-	const struct lys_node *snode;
-
 	/* Value encoded as a raw string. */
 	char *value;
 };
@@ -76,16 +77,8 @@ struct yang_list_keys {
 	/* Number os keys (max: LIST_MAXKEYS). */
 	uint8_t num;
 
-	struct {
-		/*
-		 * Schema information (necessary to interpret certain values
-		 * like enums).
-		 */
-		struct lys_node *snode;
-
-		/* Value encoded as a raw string. */
-		char value[LIST_MAXKEYLEN];
-	} key[LIST_MAXKEYS];
+	/* Value encoded as a raw string. */
+	char key[LIST_MAXKEYS][LIST_MAXKEYLEN];
 };
 
 enum yang_path_type {
@@ -93,14 +86,29 @@ enum yang_path_type {
 	YANG_PATH_DATA,
 };
 
-/* Filter non-presence containers. */
-#define YANG_ITER_FILTER_NPCONTAINERS 0x0001
-/* Filter list keys (leafs). */
-#define YANG_ITER_FILTER_LIST_KEYS 0x0002
-/* Filter RPC input/output nodes. */
-#define YANG_ITER_FILTER_INPUT_OUTPUT 0x0004
-/* Filter implicitely created nodes. */
-#define YANG_ITER_FILTER_IMPLICIT 0x0008
+enum yang_iter_flags {
+	/* Filter non-presence containers. */
+	YANG_ITER_FILTER_NPCONTAINERS = (1<<0),
+
+	/* Filter list keys (leafs). */
+	YANG_ITER_FILTER_LIST_KEYS = (1<<1),
+
+	/* Filter RPC input/output nodes. */
+	YANG_ITER_FILTER_INPUT_OUTPUT = (1<<2),
+
+	/* Filter implicitely created nodes. */
+	YANG_ITER_FILTER_IMPLICIT = (1<<3),
+
+	/* Allow iteration over augmentations. */
+	YANG_ITER_ALLOW_AUGMENTATIONS = (1<<4),
+};
+
+/* Callback used by the yang_snodes_iterate_*() family of functions. */
+typedef int (*yang_iterate_cb)(const struct lys_node *snode, void *arg);
+
+/* Return values of the 'yang_iterate_cb' callback. */
+#define YANG_ITER_CONTINUE 0
+#define YANG_ITER_STOP -1
 
 /* Global libyang context for native FRR models. */
 extern struct ly_ctx *ly_native_ctx;
@@ -122,6 +130,11 @@ extern struct yang_modules yang_modules;
 extern struct yang_module *yang_module_load(const char *module_name);
 
 /*
+ * Load all FRR native YANG models.
+ */
+extern void yang_module_load_all(void);
+
+/*
  * Find a YANG module by its name.
  *
  * module_name
@@ -133,46 +146,76 @@ extern struct yang_module *yang_module_load(const char *module_name);
 extern struct yang_module *yang_module_find(const char *module_name);
 
 /*
+ * Register a YANG module embedded in the binary file.  Should be called
+ * from a constructor function.
+ *
+ * embed
+ *    YANG module embedding structure to register.  (static global provided
+ *    by caller.)
+ */
+extern void yang_module_embed(struct yang_module_embed *embed);
+
+/*
+ * Iterate recursively over all children of a schema node.
+ *
+ * snode
+ *    YANG schema node to operate on.
+ *
+ * cb
+ *    Function to call with each schema node.
+ *
+ * flags
+ *    YANG_ITER_* flags to control how the iteration is performed.
+ *
+ * arg
+ *    Arbitrary argument passed as the second parameter in each call to 'cb'.
+ *
+ * Returns:
+ *    The return value of the last called callback.
+ */
+extern int yang_snodes_iterate_subtree(const struct lys_node *snode,
+				       yang_iterate_cb cb, uint16_t flags,
+				       void *arg);
+
+/*
  * Iterate over all libyang schema nodes from the given YANG module.
  *
  * module
  *    YANG module to operate on.
  *
- * func
+ * cb
  *    Function to call with each schema node.
  *
  * flags
- *    YANG_ITER_FILTER_* flags to specify node types that should be filtered.
+ *    YANG_ITER_* flags to control how the iteration is performed.
  *
- * arg1
- *    Arbitrary argument passed as the second parameter in each call to 'func'.
+ * arg
+ *    Arbitrary argument passed as the second parameter in each call to 'cb'.
  *
- * arg2
- *    Arbitrary argument passed as the third parameter in each call to 'func'.
+ * Returns:
+ *    The return value of the last called callback.
  */
-extern void yang_module_snodes_iterate(const struct lys_module *module,
-				       void (*func)(const struct lys_node *,
-						    void *, void *),
-				       uint16_t flags, void *arg1, void *arg2);
+extern int yang_snodes_iterate_module(const struct lys_module *module,
+				      yang_iterate_cb cb, uint16_t flags,
+				      void *arg);
 
 /*
  * Iterate over all libyang schema nodes from all loaded YANG modules.
  *
- * func
+ * cb
  *    Function to call with each schema node.
  *
  * flags
- *    YANG_ITER_FILTER_* flags to specify node types that should be filtered.
+ *    YANG_ITER_* flags to control how the iteration is performed.
  *
- * arg1
- *    Arbitrary argument passed as the second parameter in each call to 'func'.
+ * arg
+ *    Arbitrary argument passed as the second parameter in each call to 'cb'.
  *
- * arg2
- *    Arbitrary argument passed as the third parameter in each call to 'func'.
+ * Returns:
+ *    The return value of the last called callback.
  */
-extern void yang_all_snodes_iterate(void (*func)(const struct lys_node *,
-						 void *, void *),
-				    uint16_t flags, void *arg1, void *arg2);
+extern int yang_snodes_iterate_all(yang_iterate_cb cb, uint16_t flags,
+				   void *arg);
 
 /*
  * Build schema path or data path of the schema node.
@@ -268,6 +311,22 @@ extern void yang_dnode_get_path(const struct lyd_node *dnode, char *xpath,
 				size_t xpath_len);
 
 /*
+ * Return the schema name of the given libyang data node.
+ *
+ * dnode
+ *    libyang data node.
+ *
+ * xpath_fmt
+ *    Optional XPath expression (absolute or relative) to specify a different
+ *    data node to operate on in the same data tree.
+ *
+ * Returns:
+ *    Schema name of the libyang data node.
+ */
+extern const char *yang_dnode_get_schema_name(const struct lyd_node *dnode,
+					      const char *xpath_fmt, ...);
+
+/*
  * Find a libyang data node by its YANG data path.
  *
  * dnode
@@ -352,15 +411,37 @@ extern void yang_dnode_change_leaf(struct lyd_node *dnode, const char *value);
 extern void yang_dnode_set_entry(const struct lyd_node *dnode, void *entry);
 
 /*
- * Find the closest data node that contains an user pointer and return it.
+ * Find the user pointer associated to the given libyang data node.
+ *
+ * The data node is traversed by following the parent pointers until an user
+ * pointer is found or until the root node is reached.
  *
  * dnode
  *    libyang data node to operate on.
  *
+ * abort_if_not_found
+ *    When set to true, abort the program if no user pointer is found.
+ *
+ *    As a rule of thumb, this parameter should be set to true in the following
+ *    scenarios:
+ *    - Calling this function from any northbound configuration callback during
+ *      the NB_EV_APPLY phase.
+ *    - Calling this function from a 'delete' northbound configuration callback
+ *      during any phase.
+ *
+ *    In both the above cases, the libyang data node should contain an user
+ *    pointer except when there's a bug in the code, in which case it's better
+ *    to abort the program right away and eliminate the need for unnecessary
+ *    NULL checks.
+ *
+ *    In all other cases, this parameter should be set to false and the caller
+ *    should check if the function returned NULL or not.
+ *
  * Returns:
  *    User pointer if found, NULL otherwise.
  */
-extern void *yang_dnode_get_entry(const struct lyd_node *dnode);
+extern void *yang_dnode_get_entry(const struct lyd_node *dnode,
+				  bool abort_if_not_found);
 
 /*
  * Create a new libyang data node.
@@ -368,10 +449,14 @@ extern void *yang_dnode_get_entry(const struct lyd_node *dnode);
  * ly_ctx
  *    libyang context to operate on.
  *
+ * config
+ *    Specify whether the data node will contain only configuration data (true)
+ *    or both configuration data and state data (false).
+ *
  * Returns:
  *    Pointer to newly created libyang data node.
  */
-extern struct lyd_node *yang_dnode_new(struct ly_ctx *ly_ctx);
+extern struct lyd_node *yang_dnode_new(struct ly_ctx *ly_ctx, bool config_only);
 
 /*
  * Duplicate a libyang data node.

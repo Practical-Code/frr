@@ -36,6 +36,7 @@
 
 int debug_northbound;
 struct nb_config *vty_shared_candidate_config;
+static struct thread_master *master;
 
 static void vty_show_libyang_errors(struct vty *vty, struct ly_ctx *ly_ctx)
 {
@@ -56,10 +57,30 @@ static void vty_show_libyang_errors(struct vty *vty, struct ly_ctx *ly_ctx)
 	ly_err_clean(ly_ctx, NULL);
 }
 
-int nb_cli_cfg_change(struct vty *vty, char *xpath_base,
-		      struct cli_config_change changes[], size_t size)
+void nb_cli_enqueue_change(struct vty *vty, const char *xpath,
+			   enum nb_operation operation, const char *value)
+{
+	struct vty_cfg_change *change;
+
+	if (vty->num_cfg_changes == VTY_MAXCFGCHANGES) {
+		/* Not expected to happen. */
+		vty_out(vty,
+			"%% Exceeded the maximum number of changes (%u) for a single command\n\n",
+			VTY_MAXCFGCHANGES);
+		return;
+	}
+
+	change = &vty->cfg_changes[vty->num_cfg_changes++];
+	strlcpy(change->xpath, xpath, sizeof(change->xpath));
+	change->operation = operation;
+	change->value = value;
+}
+
+int nb_cli_apply_changes(struct vty *vty, const char *xpath_base_fmt, ...)
 {
 	struct nb_config *candidate_transitory;
+	char xpath_base[XPATH_MAXLEN];
+	va_list ap;
 	bool error = false;
 	int ret;
 
@@ -72,9 +93,14 @@ int nb_cli_cfg_change(struct vty *vty, char *xpath_base,
 	 */
 	candidate_transitory = nb_config_dup(vty->candidate_config);
 
+	/* Parse the base XPath format string. */
+	va_start(ap, xpath_base_fmt);
+	vsnprintf(xpath_base, sizeof(xpath_base), xpath_base_fmt, ap);
+	va_end(ap);
+
 	/* Edit candidate configuration. */
-	for (size_t i = 0; i < size; i++) {
-		struct cli_config_change *change = &changes[i];
+	for (size_t i = 0; i < vty->num_cfg_changes; i++) {
+		struct vty_cfg_change *change = &vty->cfg_changes[i];
 		struct nb_node *nb_node;
 		char xpath[XPATH_MAXLEN];
 		struct yang_data *data;
@@ -82,19 +108,21 @@ int nb_cli_cfg_change(struct vty *vty, char *xpath_base,
 		/* Handle relative XPaths. */
 		memset(xpath, 0, sizeof(xpath));
 		if (vty->xpath_index > 0
-		    && ((xpath_base && xpath_base[0] == '.')
+		    && ((xpath_base_fmt && xpath_base[0] == '.')
 			|| change->xpath[0] == '.'))
 			strlcpy(xpath, VTY_CURR_XPATH, sizeof(xpath));
-		if (xpath_base) {
+		if (xpath_base_fmt) {
 			if (xpath_base[0] == '.')
-				xpath_base++;
-			strlcat(xpath, xpath_base, sizeof(xpath));
+				strlcat(xpath, xpath_base + 1, sizeof(xpath));
+			else
+				strlcat(xpath, xpath_base, sizeof(xpath));
 		}
 		if (change->xpath[0] == '.')
 			strlcat(xpath, change->xpath + 1, sizeof(xpath));
 		else
 			strlcpy(xpath, change->xpath, sizeof(xpath));
 
+		/* Find the northbound node associated to the data path. */
 		nb_node = nb_node_find(xpath);
 		if (!nb_node) {
 			flog_warn(EC_LIB_YANG_UNKNOWN_DATA_PATH,
@@ -186,22 +214,96 @@ int nb_cli_rpc(const char *xpath, struct list *input, struct list *output)
 	}
 }
 
-static int nb_cli_commit(struct vty *vty, bool force, char *comment)
+void nb_cli_confirmed_commit_clean(struct vty *vty)
+{
+	THREAD_TIMER_OFF(vty->t_confirmed_commit_timeout);
+	nb_config_free(vty->confirmed_commit_rollback);
+	vty->confirmed_commit_rollback = NULL;
+}
+
+int nb_cli_confirmed_commit_rollback(struct vty *vty)
 {
 	uint32_t transaction_id;
 	int ret;
+
+	/* Perform the rollback. */
+	ret = nb_candidate_commit(
+		vty->confirmed_commit_rollback, NB_CLIENT_CLI, true,
+		"Rollback to previous configuration - confirmed commit has timed out",
+		&transaction_id);
+	if (ret == NB_OK)
+		vty_out(vty,
+			"Rollback performed successfully (Transaction ID #%u).\n",
+			transaction_id);
+	else
+		vty_out(vty, "Failed to rollback to previous configuration.\n");
+
+	return ret;
+}
+
+static int nb_cli_confirmed_commit_timeout(struct thread *thread)
+{
+	struct vty *vty = THREAD_ARG(thread);
+
+	/* XXX: broadcast this message to all logged-in users? */
+	vty_out(vty,
+		"\nConfirmed commit has timed out, rolling back to previous configuration.\n\n");
+
+	nb_cli_confirmed_commit_rollback(vty);
+	nb_cli_confirmed_commit_clean(vty);
+
+	return 0;
+}
+
+static int nb_cli_commit(struct vty *vty, bool force,
+			 unsigned int confirmed_timeout, char *comment)
+{
+	uint32_t transaction_id;
+	int ret;
+
+	/* Check if there's a pending confirmed commit. */
+	if (vty->t_confirmed_commit_timeout) {
+		if (confirmed_timeout) {
+			/* Reset timeout if "commit confirmed" is used again. */
+			vty_out(vty,
+				"%% Resetting confirmed-commit timeout to %u minute(s)\n\n",
+				confirmed_timeout);
+
+			THREAD_TIMER_OFF(vty->t_confirmed_commit_timeout);
+			thread_add_timer(master,
+					 nb_cli_confirmed_commit_timeout, vty,
+					 confirmed_timeout * 60,
+					 &vty->t_confirmed_commit_timeout);
+		} else {
+			/* Accept commit confirmation. */
+			vty_out(vty, "%% Commit complete.\n\n");
+			nb_cli_confirmed_commit_clean(vty);
+		}
+		return CMD_SUCCESS;
+	}
 
 	if (vty_exclusive_lock != NULL && vty_exclusive_lock != vty) {
 		vty_out(vty, "%% Configuration is locked by another VTY.\n\n");
 		return CMD_WARNING;
 	}
 
+	/* "force" parameter. */
 	if (!force && nb_candidate_needs_update(vty->candidate_config)) {
 		vty_out(vty,
 			"%% Candidate configuration needs to be updated before commit.\n\n");
 		vty_out(vty,
 			"Use the \"update\" command or \"commit force\".\n");
 		return CMD_WARNING;
+	}
+
+	/* "confirm" parameter. */
+	if (confirmed_timeout) {
+		vty->confirmed_commit_rollback = nb_config_dup(running_config);
+
+		vty->t_confirmed_commit_timeout = NULL;
+		thread_add_timer(master, nb_cli_confirmed_commit_timeout, vty,
+				 confirmed_timeout * 60,
+				 &vty->t_confirmed_commit_timeout);
 	}
 
 	ret = nb_candidate_commit(vty->candidate_config, NB_CLIENT_CLI, true,
@@ -359,7 +461,7 @@ static int nb_cli_show_config_libyang(struct vty *vty, LYD_FORMAT format,
 {
 	struct lyd_node *dnode;
 	char *strp;
-	int options;
+	int options = 0;
 
 	dnode = yang_dnode_dup(config->dnode);
 	if (translator
@@ -371,11 +473,11 @@ static int nb_cli_show_config_libyang(struct vty *vty, LYD_FORMAT format,
 		return CMD_WARNING;
 	}
 
-	options = LYP_FORMAT | LYP_WITHSIBLINGS;
+	SET_FLAG(options, LYP_FORMAT | LYP_WITHSIBLINGS);
 	if (with_defaults)
-		options |= LYP_WD_ALL;
+		SET_FLAG(options, LYP_WD_ALL);
 	else
-		options |= LYP_WD_TRIM;
+		SET_FLAG(options, LYP_WD_TRIM);
 
 	if (lyd_print_mem(&strp, dnode, format, options) == 0 && strp) {
 		vty_out(vty, "%s", strp);
@@ -492,20 +594,7 @@ DEFUN (config_exclusive,
        "Configuration from vty interface\n"
        "Configure exclusively from this terminal\n")
 {
-	if (vty_config_exclusive_lock(vty))
-		vty->node = CONFIG_NODE;
-	else {
-		vty_out(vty, "VTY configuration is locked by other VTY\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	vty->private_config = true;
-	vty->candidate_config = nb_config_dup(running_config);
-	vty->candidate_config_base = nb_config_dup(running_config);
-	vty_out(vty,
-		"Warning: uncommitted changes will be discarded on exit.\n\n");
-
-	return CMD_SUCCESS;
+	return vty_config_enter(vty, true, true);
 }
 
 /* Configure using a private candidate configuration. */
@@ -515,36 +604,27 @@ DEFUN (config_private,
        "Configuration from vty interface\n"
        "Configure using a private candidate configuration\n")
 {
-	if (vty_config_lock(vty))
-		vty->node = CONFIG_NODE;
-	else {
-		vty_out(vty, "VTY configuration is locked by other VTY\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-
-	vty->private_config = true;
-	vty->candidate_config = nb_config_dup(running_config);
-	vty->candidate_config_base = nb_config_dup(running_config);
-	vty_out(vty,
-		"Warning: uncommitted changes will be discarded on exit.\n\n");
-
-	return CMD_SUCCESS;
+	return vty_config_enter(vty, true, false);
 }
 
 DEFPY (config_commit,
        config_commit_cmd,
-       "commit [force$force]",
+       "commit [{force$force|confirmed (1-60)}]",
        "Commit changes into the running configuration\n"
-       "Force commit even if the candidate is outdated\n")
+       "Force commit even if the candidate is outdated\n"
+       "Rollback this commit unless there is a confirming commit\n"
+       "Timeout in minutes for the commit to be confirmed\n")
 {
-	return nb_cli_commit(vty, !!force, NULL);
+	return nb_cli_commit(vty, !!force, confirmed, NULL);
 }
 
 DEFPY (config_commit_comment,
        config_commit_comment_cmd,
-       "commit [force$force] comment LINE...",
+       "commit [{force$force|confirmed (1-60)}] comment LINE...",
        "Commit changes into the running configuration\n"
        "Force commit even if the candidate is outdated\n"
+       "Rollback this commit unless there is a confirming commit\n"
+       "Timeout in minutes for the commit to be confirmed\n"
        "Assign a comment to this commit\n"
        "Comment for this commit (Max 80 characters)\n")
 {
@@ -554,7 +634,7 @@ DEFPY (config_commit_comment,
 
 	argv_find(argv, argc, "LINE", &idx);
 	comment = argv_concat(argv, argc, idx);
-	ret = nb_cli_commit(vty, !!force, comment);
+	ret = nb_cli_commit(vty, !!force, confirmed, comment);
 	XFREE(MTYPE_TMP, comment);
 
 	return ret;
@@ -749,6 +829,30 @@ DEFPY (show_config_candidate,
 
 	nb_cli_show_config(vty, vty->candidate_config, format, translator,
 			   !!with_defaults);
+
+	return CMD_SUCCESS;
+}
+
+DEFPY (show_config_candidate_section,
+       show_config_candidate_section_cmd,
+       "show",
+       SHOW_STR)
+{
+	struct lyd_node *dnode;
+
+	/* Top-level configuration node, display everything. */
+	if (vty->xpath_index == 0)
+		return nb_cli_show_config(vty, vty->candidate_config,
+					  NB_CFG_FMT_CMDS, NULL, false);
+
+	/* Display only the current section of the candidate configuration. */
+	dnode = yang_dnode_get(vty->candidate_config->dnode, VTY_CURR_XPATH);
+	if (!dnode)
+		/* Shouldn't happen. */
+		return CMD_WARNING;
+
+	nb_cli_show_dnode_cmds(vty, dnode, 0);
+	vty_out(vty, "!\n");
 
 	return CMD_SUCCESS;
 }
@@ -1097,6 +1201,117 @@ DEFPY (show_config_transaction,
 #endif /* HAVE_CONFIG_ROLLBACKS */
 }
 
+static int nb_cli_oper_data_cb(const struct lys_node *snode,
+			       struct yang_translator *translator,
+			       struct yang_data *data, void *arg)
+{
+	struct lyd_node *dnode = arg;
+	struct ly_ctx *ly_ctx;
+
+	if (translator) {
+		int ret;
+
+		ret = yang_translate_xpath(translator,
+					   YANG_TRANSLATE_FROM_NATIVE,
+					   data->xpath, sizeof(data->xpath));
+		switch (ret) {
+		case YANG_TRANSLATE_SUCCESS:
+			break;
+		case YANG_TRANSLATE_NOTFOUND:
+			goto exit;
+		case YANG_TRANSLATE_FAILURE:
+			goto error;
+		}
+
+		ly_ctx = translator->ly_ctx;
+	} else
+		ly_ctx = ly_native_ctx;
+
+	ly_errno = 0;
+	dnode = lyd_new_path(dnode, ly_ctx, data->xpath, (void *)data->value, 0,
+			     LYD_PATH_OPT_UPDATE);
+	if (!dnode && ly_errno) {
+		flog_warn(EC_LIB_LIBYANG, "%s: lyd_new_path() failed",
+			  __func__);
+		goto error;
+	}
+
+exit:
+	yang_data_free(data);
+	return NB_OK;
+
+error:
+	yang_data_free(data);
+	return NB_ERR;
+}
+
+DEFPY (show_yang_operational_data,
+       show_yang_operational_data_cmd,
+       "show yang operational-data XPATH$xpath\
+         [{\
+	   format <json$json|xml$xml>\
+	   |translate WORD$translator_family\
+	 }]",
+       SHOW_STR
+       "YANG information\n"
+       "Show YANG operational data\n"
+       "XPath expression specifying the YANG data path\n"
+       "Set the output format\n"
+       "JavaScript Object Notation\n"
+       "Extensible Markup Language\n"
+       "Translate operational data\n"
+       "YANG module translator\n")
+{
+	LYD_FORMAT format;
+	struct yang_translator *translator = NULL;
+	struct ly_ctx *ly_ctx;
+	struct lyd_node *dnode;
+	char *strp;
+
+	if (xml)
+		format = LYD_XML;
+	else
+		format = LYD_JSON;
+
+	if (translator_family) {
+		translator = yang_translator_find(translator_family);
+		if (!translator) {
+			vty_out(vty, "%% Module translator \"%s\" not found\n",
+				translator_family);
+			return CMD_WARNING;
+		}
+
+		ly_ctx = translator->ly_ctx;
+	} else
+		ly_ctx = ly_native_ctx;
+
+	/* Obtain data. */
+	dnode = yang_dnode_new(ly_ctx, false);
+	if (nb_oper_data_iterate(xpath, translator, 0, nb_cli_oper_data_cb,
+				 dnode)
+	    != NB_OK) {
+		vty_out(vty, "%% Failed to fetch operational data.\n");
+		yang_dnode_free(dnode);
+		return CMD_WARNING;
+	}
+	lyd_validate(&dnode, LYD_OPT_DATA | LYD_OPT_DATA_NO_YANGLIB, ly_ctx);
+
+	/* Display the data. */
+	if (lyd_print_mem(&strp, dnode, format,
+			  LYP_FORMAT | LYP_WITHSIBLINGS | LYP_WD_ALL)
+		    != 0
+	    || !strp) {
+		vty_out(vty, "%% Failed to display operational data.\n");
+		yang_dnode_free(dnode);
+		return CMD_WARNING;
+	}
+	vty_out(vty, "%s", strp);
+	free(strp);
+	yang_dnode_free(dnode);
+
+	return CMD_SUCCESS;
+}
+
 DEFPY (show_yang_module,
        show_yang_module_cmd,
        "show yang module [module-translator WORD$translator_family]",
@@ -1356,6 +1571,8 @@ static struct cmd_node nb_debug_node = {NORTHBOUND_DEBUG_NODE, "", 1};
 
 void nb_cli_install_default(int node)
 {
+	install_element(node, &show_config_candidate_section_cmd);
+
 	if (frr_get_cli_mode() != FRR_CLI_TRANSACTIONAL)
 		return;
 
@@ -1405,8 +1622,10 @@ static const struct cmd_variable_handler yang_var_handlers[] = {
 	 .completions = yang_translator_autocomplete},
 	{.completions = NULL}};
 
-void nb_cli_init(void)
+void nb_cli_init(struct thread_master *tm)
 {
+	master = tm;
+
 	/* Initialize the shared candidate configuration. */
 	vty_shared_candidate_config = nb_config_new(NULL);
 
@@ -1436,6 +1655,7 @@ void nb_cli_init(void)
 	/* Other commands. */
 	install_element(CONFIG_NODE, &yang_module_translator_load_cmd);
 	install_element(CONFIG_NODE, &yang_module_translator_unload_cmd);
+	install_element(ENABLE_NODE, &show_yang_operational_data_cmd);
 	install_element(ENABLE_NODE, &show_yang_module_cmd);
 	install_element(ENABLE_NODE, &show_yang_module_detail_cmd);
 	install_element(ENABLE_NODE, &show_yang_module_translator_cmd);

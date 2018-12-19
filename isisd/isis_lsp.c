@@ -143,6 +143,8 @@ static void lsp_destroy(struct isis_lsp *lsp)
 
 	if (lsp->pdu)
 		stream_free(lsp->pdu);
+
+	fabricd_lsp_free(lsp);
 	XFREE(MTYPE_ISIS_LSP, lsp);
 }
 
@@ -253,7 +255,8 @@ int lsp_compare(char *areatag, struct isis_lsp *lsp, uint32_t seqno,
 	if (seqno > lsp->hdr.seqno
 	    || (seqno == lsp->hdr.seqno
 		&& ((lsp->hdr.rem_lifetime != 0 && rem_lifetime == 0)
-		    || lsp->hdr.checksum != checksum))) {
+		    || (lsp->hdr.checksum != checksum
+			&& lsp->hdr.rem_lifetime)))) {
 		if (isis->debugs & DEBUG_SNP_PACKETS) {
 			zlog_debug(
 				"ISIS-Snp (%s): Compare LSP %s seq 0x%08" PRIx32
@@ -352,6 +355,15 @@ void lsp_inc_seqno(struct isis_lsp *lsp, uint32_t seqno)
 	else
 		newseq = seqno + 1;
 
+#ifndef FABRICD
+	/* check for overflow */
+	if (newseq < lsp->hdr.seqno) {
+		/* send northbound notification */
+		isis_notif_lsp_exceed_max(lsp->area,
+					  rawlspid_print(lsp->hdr.lsp_id));
+	}
+#endif /* ifndef FABRICD */
+
 	lsp->hdr.seqno = newseq;
 
 	lsp_pack_pdu(lsp);
@@ -383,6 +395,7 @@ static void lsp_purge(struct isis_lsp *lsp, int level,
 	lsp->hdr.rem_lifetime = 0;
 	lsp->level = level;
 	lsp->age_out = lsp->area->max_lsp_lifetime[level - 1];
+	lsp->area->lsp_purge_count[level - 1]++;
 
 	lsp_purge_add_poi(lsp, sender);
 
@@ -406,8 +419,12 @@ static void lsp_seqno_update(struct isis_lsp *lsp0)
 	for (ALL_LIST_ELEMENTS_RO(lsp0->lspu.frags, node, lsp)) {
 		if (lsp->tlvs)
 			lsp_inc_seqno(lsp, 0);
-		else
+		else if (lsp->hdr.rem_lifetime) {
+			/* Purge should only be applied when the fragment has
+			 * non-zero remaining lifetime.
+			 */
 			lsp_purge(lsp, lsp0->level, NULL);
+		}
 	}
 
 	return;
@@ -578,29 +595,17 @@ void lsp_insert(struct isis_lsp *lsp, dict_t *lspdb)
 void lsp_build_list_nonzero_ht(uint8_t *start_id, uint8_t *stop_id,
 			       struct list *list, dict_t *lspdb)
 {
-	dnode_t *first, *last, *curr;
+	for (dnode_t *curr = dict_lower_bound(lspdb, start_id);
+	     curr; curr = dict_next(lspdb, curr)) {
+		struct isis_lsp *lsp = curr->dict_data;
 
-	first = dict_lower_bound(lspdb, start_id);
-	if (!first)
-		return;
-
-	last = dict_upper_bound(lspdb, stop_id);
-
-	curr = first;
-
-	if (((struct isis_lsp *)(curr->dict_data))->hdr.rem_lifetime)
-		listnode_add(list, first->dict_data);
-
-	while (curr) {
-		curr = dict_next(lspdb, curr);
-		if (curr
-		    && ((struct isis_lsp *)(curr->dict_data))->hdr.rem_lifetime)
-			listnode_add(list, curr->dict_data);
-		if (curr == last)
+		if (memcmp(lsp->hdr.lsp_id, stop_id,
+			   ISIS_SYS_ID_LEN + 2) > 0)
 			break;
-	}
 
-	return;
+		if (lsp->hdr.rem_lifetime)
+			listnode_add(list, lsp);
+	}
 }
 
 static void lsp_set_time(struct isis_lsp *lsp)
@@ -618,7 +623,7 @@ static void lsp_set_time(struct isis_lsp *lsp)
 		stream_putw_at(lsp->pdu, 10, lsp->hdr.rem_lifetime);
 }
 
-static void lspid_print(uint8_t *lsp_id, uint8_t *trg, char dynhost, char frag)
+void lspid_print(uint8_t *lsp_id, char *dest, char dynhost, char frag)
 {
 	struct isis_dynhn *dyn = NULL;
 	uint8_t id[SYSID_STRLEN];
@@ -635,10 +640,10 @@ static void lspid_print(uint8_t *lsp_id, uint8_t *trg, char dynhost, char frag)
 	else
 		memcpy(id, sysid_print(lsp_id), 15);
 	if (frag)
-		sprintf((char *)trg, "%s.%02x-%02x", id, LSP_PSEUDO_ID(lsp_id),
+		sprintf(dest, "%s.%02x-%02x", id, LSP_PSEUDO_ID(lsp_id),
 			LSP_FRAGMENT(lsp_id));
 	else
-		sprintf((char *)trg, "%s.%02x", id, LSP_PSEUDO_ID(lsp_id));
+		sprintf(dest, "%s.%02x", id, LSP_PSEUDO_ID(lsp_id));
 }
 
 /* Convert the lsp attribute bits to attribute string */
@@ -667,7 +672,7 @@ static const char *lsp_bits2string(uint8_t lsp_bits, char *buf, size_t buf_size)
 /* this function prints the lsp on show isis database */
 void lsp_print(struct isis_lsp *lsp, struct vty *vty, char dynhost)
 {
-	uint8_t LSPid[255];
+	char LSPid[255];
 	char age_out[8];
 	char b[200];
 
@@ -1245,6 +1250,7 @@ int lsp_generate(struct isis_area *area, int level)
 	lsp_seqno_update(newlsp);
 	newlsp->last_generated = time(NULL);
 	lsp_flood(newlsp, NULL);
+	area->lsp_gen_count[level - 1]++;
 
 	refresh_time = lsp_refresh_time(newlsp, rem_lifetime);
 
@@ -1267,6 +1273,12 @@ int lsp_generate(struct isis_area *area, int level)
 	sched_debug(
 		"ISIS (%s): Built L%d LSP. Set triggered regenerate to non-pending.",
 		area->area_tag, level);
+
+#ifndef FABRICD
+	/* send northbound notification */
+	isis_notif_lsp_gen(area, rawlspid_print(newlsp->hdr.lsp_id),
+			   newlsp->hdr.seqno, newlsp->last_generated);
+#endif /* ifndef FABRICD */
 
 	return ISIS_OK;
 }
@@ -1305,7 +1317,15 @@ static int lsp_regenerate(struct isis_area *area, int level)
 	lsp->hdr.rem_lifetime = rem_lifetime;
 	lsp->last_generated = time(NULL);
 	lsp_flood(lsp, NULL);
+	area->lsp_gen_count[level - 1]++;
 	for (ALL_LIST_ELEMENTS_RO(lsp->lspu.frags, node, frag)) {
+		if (!frag->tlvs) {
+			/* Updating and flooding should only affect fragments
+			 * carrying data
+			 */
+			continue;
+		}
+
 		frag->hdr.lsp_bits = lsp_bits_generate(
 			level, area->overload_bit, area->attached_bit);
 		/* Set the lifetime values of all the fragments to the same
@@ -1361,7 +1381,7 @@ static int lsp_refresh(struct thread *thread)
 	if ((area->is_type & level) == 0)
 		return ISIS_ERROR;
 
-	if (monotime_since(&area->last_lsp_refresh_event[level - 1], NULL) < 50000L) {
+	if (monotime_since(&area->last_lsp_refresh_event[level - 1], NULL) < 100000L) {
 		sched_debug("ISIS (%s): Still unstable, postpone LSP L%d refresh",
 			    area->area_tag, level);
 		_lsp_regenerate_schedule(area, level, 0, false,
@@ -1962,6 +1982,7 @@ void lsp_purge_non_exist(int level, struct isis_lsp_hdr *hdr,
 	lsp->level = level;
 	lsp_adjust_stream(lsp);
 	lsp->age_out = ZERO_AGE_LIFETIME;
+	lsp->area->lsp_purge_count[level - 1]++;
 
 	memcpy(&lsp->hdr, hdr, sizeof(lsp->hdr));
 	lsp->hdr.rem_lifetime = 0;
@@ -1997,15 +2018,24 @@ void lsp_set_all_srmflags(struct isis_lsp *lsp, bool set)
 	}
 }
 
-void lsp_flood(struct isis_lsp *lsp, struct isis_circuit *circuit)
+void _lsp_flood(struct isis_lsp *lsp, struct isis_circuit *circuit,
+		const char *func, const char *file, int line)
 {
-	if (!fabricd) {
-		lsp_set_all_srmflags(lsp, true);
-		if (circuit)
-			isis_tx_queue_del(circuit->tx_queue, lsp);
-	} else {
-		fabricd_lsp_flood(lsp);
+	if (isis->debugs & DEBUG_FLOODING) {
+		zlog_debug("Flooding LSP %s%s%s (From %s %s:%d)",
+			   rawlspid_print(lsp->hdr.lsp_id),
+			   circuit ? " except on " : "",
+			   circuit ? circuit->interface->name : "",
+			   func, file, line);
 	}
+
+	if (!fabricd)
+		lsp_set_all_srmflags(lsp, true);
+	else
+		fabricd_lsp_flood(lsp, circuit);
+
+	if (circuit)
+		isis_tx_queue_del(circuit->tx_queue, lsp);
 }
 
 static int lsp_handle_adj_state_change(struct isis_adjacency *adj)

@@ -73,6 +73,9 @@ struct zserv {
 	struct thread *t_read;
 	struct thread *t_write;
 
+	/* Event for message processing, for the main pthread */
+	struct thread *t_process;
+
 	/* Threads for the main pthread */
 	struct thread *t_cleanup;
 
@@ -157,9 +160,9 @@ struct zserv {
 	/* monotime of last message sent */
 	_Atomic uint32_t last_write_time;
 	/* command code of last message read */
-	_Atomic uint16_t last_read_cmd;
+	_Atomic uint32_t last_read_cmd;
 	/* command code of last message written */
-	_Atomic uint16_t last_write_cmd;
+	_Atomic uint32_t last_write_cmd;
 };
 
 #define ZAPI_HANDLER_ARGS                                                      \
@@ -184,6 +187,7 @@ struct zebra_t {
 
 /* rib work queue */
 #define ZEBRA_RIB_PROCESS_HOLD_TIME 10
+#define ZEBRA_RIB_PROCESS_RETRY_TIME 5
 	struct work_queue *ribq;
 	struct meta_queue *mq;
 

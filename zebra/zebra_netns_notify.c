@@ -219,7 +219,7 @@ static int zebra_ns_ready_read(struct thread *t)
 		zlog_warn(
 			  "NS notify : NS %s is default VRF."
 			  " Updating VRF Name", basename(netnspath));
-		vrf_set_default_name(basename(netnspath));
+		vrf_set_default_name(basename(netnspath), false);
 		return zebra_ns_continue_read(zns_info, 1);
 	}
 
@@ -252,8 +252,6 @@ static int zebra_ns_notify_read(struct thread *t)
 
 		if (!(event->mask & (IN_CREATE | IN_DELETE)))
 			continue;
-		if (event->mask & IN_DELETE)
-			return zebra_ns_delete(event->name);
 
 		if (offsetof(struct inotify_event, name) + event->len
 		    >= sizeof(buf)) {
@@ -267,6 +265,9 @@ static int zebra_ns_notify_read(struct thread *t)
 				 "NS notify error: bad event name");
 			break;
 		}
+
+		if (event->mask & IN_DELETE)
+			return zebra_ns_delete(event->name);
 
 		netnspath = ns_netns_pathname(NULL, event->name);
 		if (!netnspath)
@@ -314,7 +315,7 @@ void zebra_ns_notify_parse(void)
 			zlog_warn(
 				  "NS notify : NS %s is default VRF."
 				  " Updating VRF Name", dent->d_name);
-			vrf_set_default_name(dent->d_name);
+			vrf_set_default_name(dent->d_name, false);
 			continue;
 		}
 		zebra_ns_notify_create_context_from_entry_name(dent->d_name);

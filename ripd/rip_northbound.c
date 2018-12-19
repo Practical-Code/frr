@@ -170,6 +170,7 @@ static int ripd_instance_distance_source_create(enum nb_event event,
 		return NB_OK;
 
 	yang_dnode_get_ipv4p(&prefix, dnode, "./prefix");
+	apply_mask_ipv4(&prefix);
 
 	/* Get RIP distance node. */
 	rn = route_node_get(rip_distance_table, (struct prefix *)&prefix);
@@ -188,7 +189,7 @@ static int ripd_instance_distance_source_delete(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	rn = yang_dnode_get_entry(dnode);
+	rn = yang_dnode_get_entry(dnode, true);
 	rdistance = rn->info;
 	if (rdistance->access_list)
 		free(rdistance->access_list);
@@ -216,7 +217,7 @@ ripd_instance_distance_source_distance_modify(enum nb_event event,
 		return NB_OK;
 
 	/* Set distance value. */
-	rn = yang_dnode_get_entry(dnode);
+	rn = yang_dnode_get_entry(dnode, true);
 	distance = yang_dnode_get_uint8(dnode, NULL);
 	rdistance = rn->info;
 	rdistance->distance = distance;
@@ -242,7 +243,7 @@ ripd_instance_distance_source_access_list_modify(enum nb_event event,
 	acl_name = yang_dnode_get_string(dnode, NULL);
 
 	/* Set access-list */
-	rn = yang_dnode_get_entry(dnode);
+	rn = yang_dnode_get_entry(dnode, true);
 	rdistance = rn->info;
 	if (rdistance->access_list)
 		free(rdistance->access_list);
@@ -262,7 +263,7 @@ ripd_instance_distance_source_access_list_delete(enum nb_event event,
 		return NB_OK;
 
 	/* Reset access-list configuration. */
-	rn = yang_dnode_get_entry(dnode);
+	rn = yang_dnode_get_entry(dnode, true);
 	rdistance = rn->info;
 	free(rdistance->access_list);
 	rdistance->access_list = NULL;
@@ -317,6 +318,7 @@ static int ripd_instance_network_create(enum nb_event event,
 		return NB_OK;
 
 	yang_dnode_get_ipv4p(&p, dnode, NULL);
+	apply_mask_ipv4((struct prefix_ipv4 *)&p);
 
 	return rip_enable_network_add(&p);
 }
@@ -330,6 +332,7 @@ static int ripd_instance_network_delete(enum nb_event event,
 		return NB_OK;
 
 	yang_dnode_get_ipv4p(&p, dnode, NULL);
+	apply_mask_ipv4((struct prefix_ipv4 *)&p);
 
 	return rip_enable_network_delete(&p);
 }
@@ -396,7 +399,7 @@ static int ripd_instance_offset_list_delete(enum nb_event event,
 
 	direct = yang_dnode_get_enum(dnode, "./direction");
 
-	offset = yang_dnode_get_entry(dnode);
+	offset = yang_dnode_get_entry(dnode, true);
 	if (offset->direct[direct].alist_name) {
 		free(offset->direct[direct].alist_name);
 		offset->direct[direct].alist_name = NULL;
@@ -426,7 +429,7 @@ ripd_instance_offset_list_access_list_modify(enum nb_event event,
 	direct = yang_dnode_get_enum(dnode, "../direction");
 	alist_name = yang_dnode_get_string(dnode, NULL);
 
-	offset = yang_dnode_get_entry(dnode);
+	offset = yang_dnode_get_entry(dnode, true);
 	if (offset->direct[direct].alist_name)
 		free(offset->direct[direct].alist_name);
 	offset->direct[direct].alist_name = strdup(alist_name);
@@ -451,7 +454,7 @@ static int ripd_instance_offset_list_metric_modify(enum nb_event event,
 	direct = yang_dnode_get_enum(dnode, "../direction");
 	metric = yang_dnode_get_uint8(dnode, NULL);
 
-	offset = yang_dnode_get_entry(dnode);
+	offset = yang_dnode_get_entry(dnode, true);
 	offset->direct[direct].metric = metric;
 
 	return NB_OK;
@@ -605,10 +608,9 @@ ripd_instance_redistribute_route_map_delete(enum nb_event event,
 
 	type = yang_dnode_get_enum(dnode, "../protocol");
 
-	if (rip->route_map[type].name) {
-		free(rip->route_map[type].name);
-		rip->route_map[type].name = NULL;
-	}
+	free(rip->route_map[type].name);
+	rip->route_map[type].name = NULL;
+	rip->route_map[type].map = NULL;
 
 	return NB_OK;
 }
@@ -667,6 +669,7 @@ static int ripd_instance_static_route_create(enum nb_event event,
 		return NB_OK;
 
 	yang_dnode_get_ipv4p(&p, dnode, NULL);
+	apply_mask_ipv4(&p);
 
 	memset(&nh, 0, sizeof(nh));
 	nh.type = NEXTHOP_TYPE_IPV4;
@@ -685,6 +688,7 @@ static int ripd_instance_static_route_delete(enum nb_event event,
 		return NB_OK;
 
 	yang_dnode_get_ipv4p(&p, dnode, NULL);
+	apply_mask_ipv4(&p);
 
 	rip_redistribute_delete(ZEBRA_ROUTE_RIP, RIP_ROUTE_STATIC, &p, 0);
 
@@ -791,7 +795,7 @@ static int lib_interface_rip_split_horizon_modify(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->split_horizon = yang_dnode_get_enum(dnode, NULL);
 
@@ -811,7 +815,7 @@ static int lib_interface_rip_v2_broadcast_modify(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->v2_broadcast = yang_dnode_get_bool(dnode, NULL);
 
@@ -832,7 +836,7 @@ lib_interface_rip_version_receive_modify(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->ri_receive = yang_dnode_get_enum(dnode, NULL);
 
@@ -852,7 +856,7 @@ static int lib_interface_rip_version_send_modify(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->ri_send = yang_dnode_get_enum(dnode, NULL);
 
@@ -872,7 +876,7 @@ static int lib_interface_rip_authentication_scheme_mode_modify(
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->auth_type = yang_dnode_get_enum(dnode, NULL);
 
@@ -893,7 +897,7 @@ static int lib_interface_rip_authentication_scheme_md5_auth_length_modify(
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->md5_auth_len = yang_dnode_get_enum(dnode, NULL);
 
@@ -909,7 +913,7 @@ static int lib_interface_rip_authentication_scheme_md5_auth_length_delete(
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	ri->md5_auth_len = yang_get_default_enum(
 		"%s/authentication-scheme/md5-auth-length", RIP_IFACE);
@@ -931,7 +935,7 @@ lib_interface_rip_authentication_password_modify(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	if (ri->auth_str)
 		XFREE(MTYPE_RIP_INTERFACE_STRING, ri->auth_str);
@@ -951,7 +955,7 @@ lib_interface_rip_authentication_password_delete(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	XFREE(MTYPE_RIP_INTERFACE_STRING, ri->auth_str);
 
@@ -972,7 +976,7 @@ lib_interface_rip_authentication_key_chain_modify(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	if (ri->key_chain)
 		XFREE(MTYPE_RIP_INTERFACE_STRING, ri->key_chain);
@@ -992,7 +996,7 @@ lib_interface_rip_authentication_key_chain_delete(enum nb_event event,
 	if (event != NB_EV_APPLY)
 		return NB_OK;
 
-	ifp = yang_dnode_get_entry(dnode);
+	ifp = yang_dnode_get_entry(dnode, true);
 	ri = ifp->info;
 	XFREE(MTYPE_RIP_INTERFACE_STRING, ri->key_chain);
 
@@ -1003,7 +1007,7 @@ lib_interface_rip_authentication_key_chain_delete(enum nb_event event,
  * XPath: /frr-ripd:ripd/state/neighbors/neighbor
  */
 static const void *
-ripd_state_neighbors_neighbor_get_next(const char *xpath,
+ripd_state_neighbors_neighbor_get_next(const void *parent_list_entry,
 				       const void *list_entry)
 {
 	struct listnode *node;
@@ -1023,20 +1027,28 @@ static int ripd_state_neighbors_neighbor_get_keys(const void *list_entry,
 	const struct rip_peer *peer = listgetdata(node);
 
 	keys->num = 1;
-	(void)inet_ntop(AF_INET, &peer->addr, keys->key[0].value,
-			sizeof(keys->key[0].value));
+	(void)inet_ntop(AF_INET, &peer->addr, keys->key[0],
+			sizeof(keys->key[0]));
 
 	return NB_OK;
 }
 
 static const void *
-ripd_state_neighbors_neighbor_lookup_entry(const struct yang_list_keys *keys)
+ripd_state_neighbors_neighbor_lookup_entry(const void *parent_list_entry,
+					   const struct yang_list_keys *keys)
 {
 	struct in_addr address;
+	struct rip_peer *peer;
+	struct listnode *node;
 
-	yang_str2ipv4(keys->key[0].value, &address);
+	yang_str2ipv4(keys->key[0], &address);
 
-	return rip_peer_lookup(&address);
+	for (ALL_LIST_ELEMENTS_RO(peer_list, node, peer)) {
+		if (IPV4_ADDR_SAME(&peer->addr, &address))
+			return node;
+	}
+
+	return NULL;
 }
 
 /*
@@ -1046,7 +1058,8 @@ static struct yang_data *
 ripd_state_neighbors_neighbor_address_get_elem(const char *xpath,
 					       const void *list_entry)
 {
-	const struct rip_peer *peer = list_entry;
+	const struct listnode *node = list_entry;
+	const struct rip_peer *peer = listgetdata(node);
 
 	return yang_data_new_ipv4(xpath, &peer->addr);
 }
@@ -1069,7 +1082,8 @@ static struct yang_data *
 ripd_state_neighbors_neighbor_bad_packets_rcvd_get_elem(const char *xpath,
 							const void *list_entry)
 {
-	const struct rip_peer *peer = list_entry;
+	const struct listnode *node = list_entry;
+	const struct rip_peer *peer = listgetdata(node);
 
 	return yang_data_new_uint32(xpath, peer->recv_badpackets);
 }
@@ -1081,7 +1095,8 @@ static struct yang_data *
 ripd_state_neighbors_neighbor_bad_routes_rcvd_get_elem(const char *xpath,
 						       const void *list_entry)
 {
-	const struct rip_peer *peer = list_entry;
+	const struct listnode *node = list_entry;
+	const struct rip_peer *peer = listgetdata(node);
 
 	return yang_data_new_uint32(xpath, peer->recv_badroutes);
 }
@@ -1089,8 +1104,9 @@ ripd_state_neighbors_neighbor_bad_routes_rcvd_get_elem(const char *xpath,
 /*
  * XPath: /frr-ripd:ripd/state/routes/route
  */
-static const void *ripd_state_routes_route_get_next(const char *xpath,
-						    const void *list_entry)
+static const void *
+ripd_state_routes_route_get_next(const void *parent_list_entry,
+				 const void *list_entry)
 {
 	struct route_node *rn;
 
@@ -1113,19 +1129,19 @@ static int ripd_state_routes_route_get_keys(const void *list_entry,
 	const struct route_node *rn = list_entry;
 
 	keys->num = 1;
-	(void)prefix2str(&rn->p, keys->key[0].value,
-			 sizeof(keys->key[0].value));
+	(void)prefix2str(&rn->p, keys->key[0], sizeof(keys->key[0]));
 
 	return NB_OK;
 }
 
 static const void *
-ripd_state_routes_route_lookup_entry(const struct yang_list_keys *keys)
+ripd_state_routes_route_lookup_entry(const void *parent_list_entry,
+				     const struct yang_list_keys *keys)
 {
 	struct prefix prefix;
 	struct route_node *rn;
 
-	yang_str2ipv4p(keys->key[0].value, &prefix);
+	yang_str2ipv4p(keys->key[0], &prefix);
 
 	rn = route_node_lookup(rip->table, &prefix);
 	if (!rn || !rn->info)
@@ -1133,10 +1149,7 @@ ripd_state_routes_route_lookup_entry(const struct yang_list_keys *keys)
 
 	route_unlock_node(rn);
 
-	/*
-	 * TODO: we need to handle ECMP properly.
-	 */
-	return listnode_head(rn->info);
+	return rn;
 }
 
 /*
@@ -1146,7 +1159,8 @@ static struct yang_data *
 ripd_state_routes_route_prefix_get_elem(const char *xpath,
 					const void *list_entry)
 {
-	const struct rip_info *rinfo = list_entry;
+	const struct route_node *rn = list_entry;
+	const struct rip_info *rinfo = listnode_head(rn->info);
 
 	return yang_data_new_ipv4p(xpath, &rinfo->rp->p);
 }
@@ -1158,7 +1172,8 @@ static struct yang_data *
 ripd_state_routes_route_next_hop_get_elem(const char *xpath,
 					  const void *list_entry)
 {
-	const struct rip_info *rinfo = list_entry;
+	const struct route_node *rn = list_entry;
+	const struct rip_info *rinfo = listnode_head(rn->info);
 
 	switch (rinfo->nh.type) {
 	case NEXTHOP_TYPE_IPV4:
@@ -1176,7 +1191,8 @@ static struct yang_data *
 ripd_state_routes_route_interface_get_elem(const char *xpath,
 					   const void *list_entry)
 {
-	const struct rip_info *rinfo = list_entry;
+	const struct route_node *rn = list_entry;
+	const struct rip_info *rinfo = listnode_head(rn->info);
 
 	switch (rinfo->nh.type) {
 	case NEXTHOP_TYPE_IFINDEX:
@@ -1195,7 +1211,8 @@ static struct yang_data *
 ripd_state_routes_route_metric_get_elem(const char *xpath,
 					const void *list_entry)
 {
-	const struct rip_info *rinfo = list_entry;
+	const struct route_node *rn = list_entry;
+	const struct rip_info *rinfo = listnode_head(rn->info);
 
 	return yang_data_new_uint8(xpath, rinfo->metric);
 }

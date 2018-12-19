@@ -147,11 +147,6 @@ static int rip_zebra_read_route(int command, struct zclient *zclient,
 	return 0;
 }
 
-void rip_zclient_reset(void)
-{
-	zclient_reset(zclient);
-}
-
 void rip_redistribute_conf_update(int type)
 {
 	zclient_redistribute(ZEBRA_REDISTRIBUTE_ADD, zclient, AFI_IP, type,
@@ -211,7 +206,7 @@ static void rip_zebra_connected(struct zclient *zclient)
 void rip_zclient_init(struct thread_master *master)
 {
 	/* Set default value to the zebra client structure. */
-	zclient = zclient_new_notify(master, &zclient_options_default);
+	zclient = zclient_new(master, &zclient_options_default);
 	zclient_init(zclient, ZEBRA_ROUTE_RIP, 0, &ripd_privs);
 	zclient->zebra_connected = rip_zebra_connected;
 	zclient->interface_add = rip_interface_add;
