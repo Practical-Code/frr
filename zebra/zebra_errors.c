@@ -86,6 +86,12 @@ static struct log_ref ferr_zebra_err[] = {
 		.suggestion = "Notify a developer.",
 	},
 	{
+		.code = EC_ZEBRA_FEC_LABEL_INDEX_LABEL_CONFLICT,
+		.title = "Refused to add FEC for MPLS client with both label index and label specified",
+		.description = "A client requested a label binding for a new FEC specifying a label index and a label at the same time.",
+		.suggestion = "Notify a developer.",
+	},
+	{
 		.code = EC_ZEBRA_FEC_RM_FAILED,
 		.title = "Failed to remove FEC for MPLS client",
 		.description = "Zebra was unable to find and remove a FEC in its internal table.",
@@ -497,6 +503,15 @@ static struct log_ref ferr_zebra_err[] = {
 			"While attempting to create nexthops for a route installation operation, Zebra found that it was unable to create one or more of the given nexthops.",
 		.suggestion =
 			"Check configuration values for correctness. If they are correct, report this as a bug.",
+	},
+	{
+		.code = EC_ZEBRA_RX_ROUTE_NO_NEXTHOPS,
+		.title =
+			"Zebra received an installation request for a route without nexthops",
+		.description =
+			"Zebra received a message from a client requesting a route installation, but the route is invalid since it doesn't have any nexthop address or interface.",
+		.suggestion =
+			"This is a bug; please report it.",
 	},
 	{
 		.code = EC_ZEBRA_RX_SRCDEST_WRONG_AFI,

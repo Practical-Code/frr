@@ -30,6 +30,7 @@
 #include "lib_errors.h"
 
 DEFINE_MTYPE_STATIC(LIB, PREFIX, "Prefix")
+DEFINE_MTYPE_STATIC(LIB, PREFIX_FLOWSPEC, "Prefix Flowspec")
 
 /* Maskbit. */
 static const uint8_t maskbit[] = {0x00, 0x80, 0xc0, 0xe0, 0xf0,
@@ -451,7 +452,7 @@ int is_zero_mac(struct ethaddr *mac)
 	return 1;
 }
 
-unsigned int prefix_bit(const uint8_t *prefix, const uint8_t prefixlen)
+unsigned int prefix_bit(const uint8_t *prefix, const uint16_t prefixlen)
 {
 	unsigned int offset = prefixlen / 8;
 	unsigned int shift = 7 - (prefixlen % 8);
@@ -459,7 +460,7 @@ unsigned int prefix_bit(const uint8_t *prefix, const uint8_t prefixlen)
 	return (prefix[offset] >> shift) & 1;
 }
 
-unsigned int prefix6_bit(const struct in6_addr *prefix, const uint8_t prefixlen)
+unsigned int prefix6_bit(const struct in6_addr *prefix, const uint16_t prefixlen)
 {
 	return prefix_bit((const uint8_t *)&prefix->s6_addr, prefixlen);
 }
@@ -820,7 +821,7 @@ const char *prefix_family_str(const struct prefix *p)
 }
 
 /* Allocate new prefix_ipv4 structure. */
-struct prefix_ipv4 *prefix_ipv4_new()
+struct prefix_ipv4 *prefix_ipv4_new(void)
 {
 	struct prefix_ipv4 *p;
 
@@ -966,18 +967,16 @@ void masklen2ip(const int masklen, struct in_addr *netmask)
 }
 
 /* Convert IP address's netmask into integer. We assume netmask is
-   sequential one. Argument netmask should be network byte order. */
+ * sequential one. Argument netmask should be network byte order. */
 uint8_t ip_masklen(struct in_addr netmask)
 {
 	uint32_t tmp = ~ntohl(netmask.s_addr);
-	if (tmp)
-		/* clz: count leading zeroes. sadly, the behaviour of this
-		 * builtin
-		 * is undefined for a 0 argument, even though most CPUs give 32
-		 */
-		return __builtin_clz(tmp);
-	else
-		return 32;
+
+	/*
+	 * clz: count leading zeroes. sadly, the behaviour of this builtin is
+	 * undefined for a 0 argument, even though most CPUs give 32
+	 */
+	return tmp ? __builtin_clz(tmp) : 32;
 }
 
 /* Apply mask to IPv4 prefix (network byte order). */
@@ -1361,7 +1360,7 @@ const char *prefix2str(union prefixconstptr pu, char *str, int size)
 	return str;
 }
 
-struct prefix *prefix_new()
+struct prefix *prefix_new(void)
 {
 	struct prefix *p;
 

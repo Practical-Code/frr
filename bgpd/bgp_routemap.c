@@ -1037,6 +1037,7 @@ struct route_map_rule_cmd route_match_aspath_cmd = {
 /* `match community COMMUNIY' */
 struct rmap_community {
 	char *name;
+	uint32_t name_hash;
 	int exact;
 };
 
@@ -1048,13 +1049,14 @@ static route_map_result_t route_match_community(void *rule,
 {
 	struct community_list *list;
 	struct bgp_path_info *path;
-	struct rmap_community *rcom;
+	struct rmap_community *rcom = rule;
 
 	if (type == RMAP_BGP) {
 		path = object;
 		rcom = rule;
 
 		list = community_list_lookup(bgp_clist, rcom->name,
+					     rcom->name_hash,
 					     COMMUNITY_LIST_MASTER);
 		if (!list)
 			return RMAP_NOMATCH;
@@ -1090,6 +1092,8 @@ static void *route_match_community_compile(const char *arg)
 		rcom->name = XSTRDUP(MTYPE_ROUTE_MAP_COMPILED, arg);
 		rcom->exact = 0;
 	}
+
+	rcom->name_hash = bgp_clist_hash_key(rcom->name);
 	return rcom;
 }
 
@@ -1115,13 +1119,13 @@ static route_map_result_t route_match_lcommunity(void *rule,
 {
 	struct community_list *list;
 	struct bgp_path_info *path;
-	struct rmap_community *rcom;
+	struct rmap_community *rcom = rule;
 
 	if (type == RMAP_BGP) {
 		path = object;
-		rcom = rule;
 
 		list = community_list_lookup(bgp_clist, rcom->name,
+					     rcom->name_hash,
 					     LARGE_COMMUNITY_LIST_MASTER);
 		if (!list)
 			return RMAP_NOMATCH;
@@ -1150,6 +1154,8 @@ static void *route_match_lcommunity_compile(const char *arg)
 		rcom->name = XSTRDUP(MTYPE_ROUTE_MAP_COMPILED, arg);
 		rcom->exact = 0;
 	}
+
+	rcom->name_hash = bgp_clist_hash_key(rcom->name);
 	return rcom;
 }
 
@@ -1176,11 +1182,13 @@ static route_map_result_t route_match_ecommunity(void *rule,
 {
 	struct community_list *list;
 	struct bgp_path_info *path;
+	struct rmap_community *rcom = rule;
 
 	if (type == RMAP_BGP) {
 		path = object;
 
-		list = community_list_lookup(bgp_clist, (char *)rule,
+		list = community_list_lookup(bgp_clist, rcom->name,
+					     rcom->name_hash,
 					     EXTCOMMUNITY_LIST_MASTER);
 		if (!list)
 			return RMAP_NOMATCH;
@@ -1194,13 +1202,22 @@ static route_map_result_t route_match_ecommunity(void *rule,
 /* Compile function for extcommunity match. */
 static void *route_match_ecommunity_compile(const char *arg)
 {
-	return XSTRDUP(MTYPE_ROUTE_MAP_COMPILED, arg);
+	struct rmap_community *rcom;
+
+	rcom = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(struct rmap_community));
+	rcom->name = XSTRDUP(MTYPE_ROUTE_MAP_COMPILED, arg);
+	rcom->name_hash = bgp_clist_hash_key(rcom->name);
+
+	return rcom;
 }
 
 /* Compile function for extcommunity match. */
 static void route_match_ecommunity_free(void *rule)
 {
-	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
+	struct rmap_community *rcom = rule;
+
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rcom->name);
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rcom);
 }
 
 /* Route map commands for community matching. */
@@ -1932,13 +1949,15 @@ static route_map_result_t route_set_lcommunity_delete(void *rule,
 	struct lcommunity *new;
 	struct lcommunity *old;
 	struct bgp_path_info *path;
+	struct rmap_community *rcom = rule;
 
 	if (type == RMAP_BGP) {
-		if (!rule)
+		if (!rcom)
 			return RMAP_OKAY;
 
 		path = object;
-		list = community_list_lookup(bgp_clist, rule,
+		list = community_list_lookup(bgp_clist, rcom->name,
+					     rcom->name_hash,
 					     LARGE_COMMUNITY_LIST_MASTER);
 		old = path->attr->lcommunity;
 
@@ -1975,9 +1994,12 @@ static route_map_result_t route_set_lcommunity_delete(void *rule,
 /* Compile function for set lcommunity. */
 static void *route_set_lcommunity_delete_compile(const char *arg)
 {
+	struct rmap_community *rcom;
 	char *p;
 	char *str;
 	int len;
+
+	rcom = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(struct rmap_community));
 
 	p = strchr(arg, ' ');
 	if (p) {
@@ -1987,13 +2009,18 @@ static void *route_set_lcommunity_delete_compile(const char *arg)
 	} else
 		str = NULL;
 
-	return str;
+	rcom->name = str;
+	rcom->name_hash = bgp_clist_hash_key(rcom->name);
+	return rcom;
 }
 
 /* Free function for set lcommunity. */
 static void route_set_lcommunity_delete_free(void *rule)
 {
-	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
+	struct rmap_community *rcom = rule;
+
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rcom->name);
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rcom);
 }
 
 /* Set lcommunity rule structure. */
@@ -2017,13 +2044,15 @@ static route_map_result_t route_set_community_delete(
 	struct community *new;
 	struct community *old;
 	struct bgp_path_info *path;
+	struct rmap_community *rcom = rule;
 
 	if (type == RMAP_BGP) {
-		if (!rule)
+		if (!rcom)
 			return RMAP_OKAY;
 
 		path = object;
-		list = community_list_lookup(bgp_clist, rule,
+		list = community_list_lookup(bgp_clist, rcom->name,
+					     rcom->name_hash,
 					     COMMUNITY_LIST_MASTER);
 		old = path->attr->community;
 
@@ -2060,9 +2089,12 @@ static route_map_result_t route_set_community_delete(
 /* Compile function for set community. */
 static void *route_set_community_delete_compile(const char *arg)
 {
+	struct rmap_community *rcom;
 	char *p;
 	char *str;
 	int len;
+
+	rcom = XCALLOC(MTYPE_ROUTE_MAP_COMPILED, sizeof(struct rmap_community));
 
 	p = strchr(arg, ' ');
 	if (p) {
@@ -2072,13 +2104,18 @@ static void *route_set_community_delete_compile(const char *arg)
 	} else
 		str = NULL;
 
-	return str;
+	rcom->name = str;
+	rcom->name_hash = bgp_clist_hash_key(rcom->name);
+	return rcom;
 }
 
 /* Free function for set community. */
 static void route_set_community_delete_free(void *rule)
 {
-	XFREE(MTYPE_ROUTE_MAP_COMPILED, rule);
+	struct rmap_community *rcom = rule;
+
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rcom->name);
+	XFREE(MTYPE_ROUTE_MAP_COMPILED, rcom);
 }
 
 /* Set community rule structure. */
@@ -3213,6 +3250,15 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 		if (bgp->table_map[afi][safi].name
 		    && (strcmp(rmap_name, bgp->table_map[afi][safi].name)
 			== 0)) {
+
+			/* bgp->table_map[afi][safi].map  is NULL.
+			 * i.e Route map creation event.
+			 * So update applied_counter.
+			 * If it is not NULL, i.e It may be routemap updation or
+			 * deletion. so no need to update the counter.
+			 */
+			if (!bgp->table_map[afi][safi].map)
+				route_map_counter_increment(map);
 			bgp->table_map[afi][safi].map = map;
 
 			if (BGP_DEBUG(zebra, ZEBRA))
@@ -3234,6 +3280,9 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 			if (!bgp_static->rmap.name
 			    || (strcmp(rmap_name, bgp_static->rmap.name) != 0))
 				continue;
+
+			if (!bgp_static->rmap.map)
+				route_map_counter_increment(map);
 
 			bgp_static->rmap.map = map;
 
@@ -3266,6 +3315,9 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 				    || (strcmp(rmap_name, red->rmap.name) != 0))
 					continue;
 
+				if (!red->rmap.map)
+					route_map_counter_increment(map);
+
 				red->rmap.map = map;
 
 				if (!route_update)
@@ -3288,12 +3340,18 @@ static void bgp_route_map_process_update(struct bgp *bgp, const char *rmap_name,
 			       != 0)
 			continue;
 
+		/* Make sure the route-map is populated here if not already done */
+		bgp->adv_cmd_rmap[afi][safi].map = map;
+
 		if (BGP_DEBUG(zebra, ZEBRA))
 			zlog_debug(
 				"Processing route_map %s update on advertise type5 route command",
 				rmap_name);
-		bgp_evpn_withdraw_type5_routes(bgp, afi, safi);
-		bgp_evpn_advertise_type5_routes(bgp, afi, safi);
+
+		if (route_update) {
+			bgp_evpn_withdraw_type5_routes(bgp, afi, safi);
+			bgp_evpn_advertise_type5_routes(bgp, afi, safi);
+		}
 	}
 }
 
@@ -4200,6 +4258,13 @@ DEFUN (no_set_community,
 				  "community", NULL);
 }
 
+ALIAS (no_set_community,
+       no_set_community_short_cmd,
+       "no set community",
+       NO_STR
+       SET_STR
+       "BGP community attribute\n")
+
 
 DEFUN (set_community_delete,
        set_community_delete_cmd,
@@ -4294,6 +4359,13 @@ DEFUN (no_set_lcommunity1,
 				  "large-community", NULL);
 }
 
+ALIAS (no_set_lcommunity1,
+       no_set_lcommunity1_short_cmd,
+       "no set large-community",
+       NO_STR
+       SET_STR
+       "BGP large community attribute\n")
+
 DEFUN (set_lcommunity_delete,
        set_lcommunity_delete_cmd,
        "set large-comm-list <(1-99)|(100-500)|WORD> delete",
@@ -4332,6 +4404,13 @@ DEFUN (no_set_lcommunity_delete,
 				  "large-comm-list", NULL);
 }
 
+ALIAS (no_set_lcommunity_delete,
+       no_set_lcommunity_delete_short_cmd,
+       "no set large-comm-list",
+       NO_STR
+       SET_STR
+       "set BGP large community list (for deletion)\n")
+
 DEFUN (set_ecommunity_rt,
        set_ecommunity_rt_cmd,
        "set extcommunity rt ASN:NN_OR_IP-ADDRESS:NN...",
@@ -4365,6 +4444,13 @@ DEFUN (no_set_ecommunity_rt,
 				  "extcommunity rt", NULL);
 }
 
+ALIAS (no_set_ecommunity_rt,
+       no_set_ecommunity_rt_short_cmd,
+       "no set extcommunity rt",
+       NO_STR
+       SET_STR
+       "BGP extended community attribute\n"
+       "Route Target extended community\n")
 
 DEFUN (set_ecommunity_soo,
        set_ecommunity_soo_cmd,
@@ -4399,6 +4485,13 @@ DEFUN (no_set_ecommunity_soo,
 				  "extcommunity soo", NULL);
 }
 
+ALIAS (no_set_ecommunity_soo,
+       no_set_ecommunity_soo_short_cmd,
+       "no set extcommunity soo",
+       NO_STR
+       SET_STR
+       "GP extended community attribute\n"
+       "Site-of-Origin extended community\n")
 
 DEFUN (set_origin,
        set_origin_cmd,
@@ -4976,18 +5069,23 @@ void bgp_route_map_init(void)
 	install_element(RMAP_NODE, &set_community_cmd);
 	install_element(RMAP_NODE, &set_community_none_cmd);
 	install_element(RMAP_NODE, &no_set_community_cmd);
+	install_element(RMAP_NODE, &no_set_community_short_cmd);
 	install_element(RMAP_NODE, &set_community_delete_cmd);
 	install_element(RMAP_NODE, &no_set_community_delete_cmd);
 	install_element(RMAP_NODE, &set_lcommunity_cmd);
 	install_element(RMAP_NODE, &set_lcommunity_none_cmd);
 	install_element(RMAP_NODE, &no_set_lcommunity_cmd);
 	install_element(RMAP_NODE, &no_set_lcommunity1_cmd);
+	install_element(RMAP_NODE, &no_set_lcommunity1_short_cmd);
 	install_element(RMAP_NODE, &set_lcommunity_delete_cmd);
 	install_element(RMAP_NODE, &no_set_lcommunity_delete_cmd);
+	install_element(RMAP_NODE, &no_set_lcommunity_delete_short_cmd);
 	install_element(RMAP_NODE, &set_ecommunity_rt_cmd);
 	install_element(RMAP_NODE, &no_set_ecommunity_rt_cmd);
+	install_element(RMAP_NODE, &no_set_ecommunity_rt_short_cmd);
 	install_element(RMAP_NODE, &set_ecommunity_soo_cmd);
 	install_element(RMAP_NODE, &no_set_ecommunity_soo_cmd);
+	install_element(RMAP_NODE, &no_set_ecommunity_soo_short_cmd);
 #ifdef KEEP_OLD_VPN_COMMANDS
 	install_element(RMAP_NODE, &set_vpn_nexthop_cmd);
 	install_element(RMAP_NODE, &no_set_vpn_nexthop_cmd);
