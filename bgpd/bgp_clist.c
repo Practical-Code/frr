@@ -36,9 +36,9 @@
 #include "bgpd/bgp_regex.h"
 #include "bgpd/bgp_clist.h"
 
-static uint32_t bgp_clist_hash_key_community_list(void *data)
+static uint32_t bgp_clist_hash_key_community_list(const void *data)
 {
-	struct community_list *cl = data;
+	struct community_list *cl = (struct community_list *) data;
 
 	if (cl->name_hash)
 		return cl->name_hash;
@@ -100,16 +100,14 @@ static void community_entry_free(struct community_entry *entry)
 	case EXTCOMMUNITY_LIST_STANDARD:
 		/* In case of standard extcommunity-list, configuration string
 		   is made by ecommunity_ecom2str().  */
-		if (entry->config)
-			XFREE(MTYPE_ECOMMUNITY_STR, entry->config);
+		XFREE(MTYPE_ECOMMUNITY_STR, entry->config);
 		if (entry->u.ecom)
 			ecommunity_free(&entry->u.ecom);
 		break;
 	case COMMUNITY_LIST_EXPANDED:
 	case EXTCOMMUNITY_LIST_EXPANDED:
 	case LARGE_COMMUNITY_LIST_EXPANDED:
-		if (entry->config)
-			XFREE(MTYPE_COMMUNITY_LIST_CONFIG, entry->config);
+		XFREE(MTYPE_COMMUNITY_LIST_CONFIG, entry->config);
 		if (entry->reg)
 			bgp_regex_free(entry->reg);
 	default:
@@ -127,8 +125,7 @@ static struct community_list *community_list_new(void)
 /* Free community-list.  */
 static void community_list_free(struct community_list *list)
 {
-	if (list->name)
-		XFREE(MTYPE_COMMUNITY_LIST_NAME, list->name);
+	XFREE(MTYPE_COMMUNITY_LIST_NAME, list->name);
 	XFREE(MTYPE_COMMUNITY_LIST, list);
 }
 
@@ -1052,8 +1049,10 @@ int lcommunity_list_set(struct community_list_handler *ch, const char *name,
 	/* Do not put duplicated community entry.  */
 	if (community_list_dup_check(list, entry))
 		community_entry_free(entry);
-	else
+	else {
 		community_list_entry_add(list, entry);
+		route_map_notify_dependencies(name, RMAP_EVENT_LLIST_ADDED);
+	}
 
 	return 0;
 }
@@ -1078,6 +1077,7 @@ int lcommunity_list_unset(struct community_list_handler *ch, const char *name,
 	/* Delete all of entry belongs to this community-list.  */
 	if (!str) {
 		community_list_delete(cm, list);
+		route_map_notify_dependencies(name, RMAP_EVENT_LLIST_DELETED);
 		return 0;
 	}
 
@@ -1103,6 +1103,7 @@ int lcommunity_list_unset(struct community_list_handler *ch, const char *name,
 		return COMMUNITY_LIST_ERR_CANT_FIND_LIST;
 
 	community_list_entry_delete(cm, list, entry);
+	route_map_notify_dependencies(name, RMAP_EVENT_LLIST_DELETED);
 
 	return 0;
 }

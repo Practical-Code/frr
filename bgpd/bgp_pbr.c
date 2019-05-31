@@ -72,9 +72,9 @@ struct bgp_pbr_rule_unique {
 	struct bgp_pbr_rule *bpr_found;
 };
 
-static int bgp_pbr_rule_walkcb(struct hash_backet *backet, void *arg)
+static int bgp_pbr_rule_walkcb(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_rule *bpr = (struct bgp_pbr_rule *)backet->data;
+	struct bgp_pbr_rule *bpr = (struct bgp_pbr_rule *)bucket->data;
 	struct bgp_pbr_rule_unique *bpru = (struct bgp_pbr_rule_unique *)
 		arg;
 	uint32_t unique = bpru->unique;
@@ -86,9 +86,9 @@ static int bgp_pbr_rule_walkcb(struct hash_backet *backet, void *arg)
 	return HASHWALK_CONTINUE;
 }
 
-static int bgp_pbr_action_walkcb(struct hash_backet *backet, void *arg)
+static int bgp_pbr_action_walkcb(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_action *bpa = (struct bgp_pbr_action *)backet->data;
+	struct bgp_pbr_action *bpa = (struct bgp_pbr_action *)bucket->data;
 	struct bgp_pbr_action_unique *bpau = (struct bgp_pbr_action_unique *)
 		arg;
 	uint32_t unique = bpau->unique;
@@ -100,10 +100,10 @@ static int bgp_pbr_action_walkcb(struct hash_backet *backet, void *arg)
 	return HASHWALK_CONTINUE;
 }
 
-static int bgp_pbr_match_entry_walkcb(struct hash_backet *backet, void *arg)
+static int bgp_pbr_match_entry_walkcb(struct hash_bucket *bucket, void *arg)
 {
 	struct bgp_pbr_match_entry *bpme =
-		(struct bgp_pbr_match_entry *)backet->data;
+		(struct bgp_pbr_match_entry *)bucket->data;
 	struct bgp_pbr_match_entry_unique *bpmeu =
 		(struct bgp_pbr_match_entry_unique *)arg;
 	uint32_t unique = bpmeu->unique;
@@ -120,9 +120,9 @@ struct bgp_pbr_match_ipsetname {
 	struct bgp_pbr_match *bpm_found;
 };
 
-static int bgp_pbr_match_pername_walkcb(struct hash_backet *backet, void *arg)
+static int bgp_pbr_match_pername_walkcb(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)backet->data;
+	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)bucket->data;
 	struct bgp_pbr_match_ipsetname *bpmi =
 		(struct bgp_pbr_match_ipsetname *)arg;
 	char *ipset_name = bpmi->ipsetname;
@@ -135,9 +135,9 @@ static int bgp_pbr_match_pername_walkcb(struct hash_backet *backet, void *arg)
 	return HASHWALK_CONTINUE;
 }
 
-static int bgp_pbr_match_iptable_walkcb(struct hash_backet *backet, void *arg)
+static int bgp_pbr_match_iptable_walkcb(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)backet->data;
+	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)bucket->data;
 	struct bgp_pbr_match_iptable_unique *bpmiu =
 		(struct bgp_pbr_match_iptable_unique *)arg;
 	uint32_t unique = bpmiu->unique;
@@ -154,9 +154,9 @@ struct bgp_pbr_match_unique {
 	struct bgp_pbr_match *bpm_found;
 };
 
-static int bgp_pbr_match_walkcb(struct hash_backet *backet, void *arg)
+static int bgp_pbr_match_walkcb(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)backet->data;
+	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)bucket->data;
 	struct bgp_pbr_match_unique *bpmu = (struct bgp_pbr_match_unique *)
 		arg;
 	uint32_t unique = bpmu->unique;
@@ -333,7 +333,7 @@ static bool bgp_pbr_extract_enumerate_unary(struct bgp_pbr_match_val list[],
 						 unary_operator, and_valmask,
 						 or_valmask, list[i].value,
 						 type_entry);
-				if (ret == false)
+				if (!ret)
 					return ret;
 				continue;
 			}
@@ -441,7 +441,7 @@ static bool bgp_pbr_extract(struct bgp_pbr_match_val list[],
 				range->min_port = list[i].value;
 			exact_match = true;
 		}
-		if (exact_match == true && i > 0)
+		if (exact_match && i > 0)
 			return false;
 		if (list[i].compare_operator ==
 		    (OPERATOR_COMPARE_GREATER_THAN +
@@ -545,7 +545,7 @@ static int bgp_pbr_validate_policy_route(struct bgp_pbr_entry_main *api)
 					   "too complex. ignoring.");
 			return 0;
 		} else if (api->match_icmp_type_num > 1 &&
-			   enumerate_icmp == false) {
+			   !enumerate_icmp) {
 			if (BGP_DEBUG(pbr, PBR))
 				zlog_debug("BGP: match icmp code is enumerate"
 					   ", and icmp type is not."
@@ -964,9 +964,9 @@ static void *bgp_pbr_match_entry_alloc_intern(void *arg)
 	return new;
 }
 
-uint32_t bgp_pbr_match_hash_key(void *arg)
+uint32_t bgp_pbr_match_hash_key(const void *arg)
 {
-	struct bgp_pbr_match *pbm = (struct bgp_pbr_match *)arg;
+	const struct bgp_pbr_match *pbm = arg;
 	uint32_t key;
 
 	key = jhash_1word(pbm->vrf_id, 0x4312abde);
@@ -1019,9 +1019,9 @@ bool bgp_pbr_match_hash_equal(const void *arg1, const void *arg2)
 	return true;
 }
 
-uint32_t bgp_pbr_rule_hash_key(void *arg)
+uint32_t bgp_pbr_rule_hash_key(const void *arg)
 {
-	struct bgp_pbr_rule *pbr = (struct bgp_pbr_rule *)arg;
+	const struct bgp_pbr_rule *pbr = arg;
 	uint32_t key;
 
 	key = prefix_hash_key(&pbr->src);
@@ -1057,12 +1057,12 @@ bool bgp_pbr_rule_hash_equal(const void *arg1, const void *arg2)
 	return true;
 }
 
-uint32_t bgp_pbr_match_entry_hash_key(void *arg)
+uint32_t bgp_pbr_match_entry_hash_key(const void *arg)
 {
-	struct bgp_pbr_match_entry *pbme;
+	const struct bgp_pbr_match_entry *pbme;
 	uint32_t key;
 
-	pbme = (struct bgp_pbr_match_entry *)arg;
+	pbme = arg;
 	key = prefix_hash_key(&pbme->src);
 	key = jhash_1word(prefix_hash_key(&pbme->dst), key);
 	key = jhash(&pbme->dst_port_min, 2, key);
@@ -1111,12 +1111,12 @@ bool bgp_pbr_match_entry_hash_equal(const void *arg1, const void *arg2)
 	return true;
 }
 
-uint32_t bgp_pbr_action_hash_key(void *arg)
+uint32_t bgp_pbr_action_hash_key(const void *arg)
 {
-	struct bgp_pbr_action *pbra;
+	const struct bgp_pbr_action *pbra;
 	uint32_t key;
 
-	pbra = (struct bgp_pbr_action *)arg;
+	pbra = arg;
 	key = jhash_1word(pbra->table_id, 0x4312abde);
 	key = jhash_1word(pbra->fwmark, key);
 	return key;
@@ -1421,7 +1421,8 @@ static void bgp_pbr_flush_iprule(struct bgp *bgp, struct bgp_pbr_action *bpa,
 			/* unlink path to bpme */
 			path = (struct bgp_path_info *)bpr->path;
 			extra = bgp_path_info_extra_get(path);
-			listnode_delete(extra->bgp_fs_iprule, bpr);
+			if (extra->bgp_fs_iprule)
+				listnode_delete(extra->bgp_fs_iprule, bpr);
 			bpr->path = NULL;
 		}
 	}
@@ -1458,7 +1459,8 @@ static void bgp_pbr_flush_entry(struct bgp *bgp, struct bgp_pbr_action *bpa,
 			/* unlink path to bpme */
 			path = (struct bgp_path_info *)bpme->path;
 			extra = bgp_path_info_extra_get(path);
-			listnode_delete(extra->bgp_fs_pbr, bpme);
+			if (extra->bgp_fs_pbr)
+				listnode_delete(extra->bgp_fs_pbr, bpme);
 			bpme->path = NULL;
 		}
 	}
@@ -1504,9 +1506,9 @@ struct bgp_pbr_rule_remain {
 	struct bgp_pbr_rule *bpr_found;
 };
 
-static int bgp_pbr_get_same_rule(struct hash_backet *backet, void *arg)
+static int bgp_pbr_get_same_rule(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_rule *r1 = (struct bgp_pbr_rule *)backet->data;
+	struct bgp_pbr_rule *r1 = (struct bgp_pbr_rule *)bucket->data;
 	struct bgp_pbr_rule_remain *ctxt =
 		(struct bgp_pbr_rule_remain *)arg;
 	struct bgp_pbr_rule *r2;
@@ -1543,9 +1545,9 @@ static int bgp_pbr_get_same_rule(struct hash_backet *backet, void *arg)
 	return HASHWALK_CONTINUE;
 }
 
-static int bgp_pbr_get_remaining_entry(struct hash_backet *backet, void *arg)
+static int bgp_pbr_get_remaining_entry(struct hash_bucket *bucket, void *arg)
 {
-	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)backet->data;
+	struct bgp_pbr_match *bpm = (struct bgp_pbr_match *)bucket->data;
 	struct bgp_pbr_match_entry_remain *bpmer =
 		(struct bgp_pbr_match_entry_remain *)arg;
 	struct bgp_pbr_match *bpm_temp;
@@ -2065,8 +2067,9 @@ static void bgp_pbr_policyroute_add_to_zebra_unit(struct bgp *bgp,
 			struct bgp_path_info_extra *extra =
 				bgp_path_info_extra_get(path);
 
-			if (extra && listnode_lookup(extra->bgp_fs_iprule,
-						     bpr)) {
+			if (extra &&
+			    listnode_lookup_nocheck(extra->bgp_fs_iprule,
+						    bpr)) {
 				if (BGP_DEBUG(pbr, PBR_ERROR))
 					zlog_err("%s: entry %p/%p already "
 						 "installed in bgp pbr iprule",
@@ -2213,7 +2216,8 @@ static void bgp_pbr_policyroute_add_to_zebra_unit(struct bgp *bgp,
 		struct bgp_path_info_extra *extra =
 			bgp_path_info_extra_get(path);
 
-		if (extra && listnode_lookup(extra->bgp_fs_pbr, bpme)) {
+		if (extra &&
+		    listnode_lookup_nocheck(extra->bgp_fs_pbr, bpme)) {
 			if (BGP_DEBUG(pbr, PBR_ERROR))
 				zlog_err(
 					"%s: entry %p/%p already installed in bgp pbr",

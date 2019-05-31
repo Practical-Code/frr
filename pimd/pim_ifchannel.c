@@ -135,9 +135,20 @@ void pim_ifchannel_delete(struct pim_ifchannel *ch)
 		if (ch->upstream->flags & PIM_UPSTREAM_FLAG_MASK_SRC_IGMP)
 			mask = PIM_OIF_FLAG_PROTO_IGMP;
 
-		/* SGRpt entry could have empty oil */
-		pim_channel_del_oif(ch->upstream->channel_oil, ch->interface,
-				    mask);
+		/*
+		 * A S,G RPT channel can have an empty oil, we also
+		 * need to take into account the fact that a ifchannel
+		 * might have been suppressing a *,G ifchannel from
+		 * being inherited.  So let's figure out what
+		 * needs to be done here
+		 */
+		if (pim_upstream_evaluate_join_desired_interface(
+			    ch->upstream, ch, ch->parent))
+			pim_channel_add_oif(ch->upstream->channel_oil,
+					    ch->interface, mask);
+		else
+			pim_channel_del_oif(ch->upstream->channel_oil,
+					    ch->interface, mask);
 		/*
 		 * Do we have any S,G's that are inheriting?
 		 * Nuke from on high too.
@@ -871,6 +882,25 @@ void pim_ifchannel_join_add(struct interface *ifp, struct in_addr neigh_addr,
 		if (source_flags & PIM_ENCODE_RPT_BIT)
 			pim_ifchannel_ifjoin_switch(__PRETTY_FUNCTION__, ch,
 						    PIM_IFJOIN_NOINFO);
+		else {
+			/*
+			 * We have received a S,G join and we are in
+			 * S,G RPT Prune state.  Which means we need
+			 * to transition to Join state and setup
+			 * state as appropriate.
+			 */
+			pim_ifchannel_ifjoin_switch(__PRETTY_FUNCTION__, ch,
+						    PIM_IFJOIN_JOIN);
+			PIM_IF_FLAG_UNSET_S_G_RPT(ch->flags);
+			if (pim_upstream_evaluate_join_desired(pim_ifp->pim,
+							       ch->upstream)) {
+				pim_channel_add_oif(ch->upstream->channel_oil,
+						    ch->interface,
+						    PIM_OIF_FLAG_PROTO_PIM);
+				pim_upstream_update_join_desired(pim_ifp->pim,
+								 ch->upstream);
+			}
+		}
 		break;
 	case PIM_IFJOIN_PRUNE_PENDING:
 		THREAD_OFF(ch->t_ifjoin_prune_pending_timer);
@@ -911,7 +941,7 @@ void pim_ifchannel_prune(struct interface *ifp, struct in_addr upstream,
 	if (!ch && !(source_flags & PIM_ENCODE_RPT_BIT)) {
 		if (PIM_DEBUG_TRACE)
 			zlog_debug(
-				"%s: Received prune with no relevant ifchannel %s(%s) state: %d",
+				"%s: Received prune with no relevant ifchannel %s%s state: %d",
 				__PRETTY_FUNCTION__, ifp->name,
 				pim_str_sg_dump(sg), source_flags);
 		return;
@@ -1330,10 +1360,12 @@ void pim_ifchannel_scan_forward_start(struct interface *new_ifp)
 void pim_ifchannel_set_star_g_join_state(struct pim_ifchannel *ch, int eom,
 					 uint8_t join)
 {
+	bool send_upstream_starg = false;
 	struct pim_ifchannel *child;
 	struct listnode *ch_node, *nch_node;
 	struct pim_instance *pim =
 		((struct pim_interface *)ch->interface->info)->pim;
+	struct pim_upstream *starup = ch->upstream;
 
 	if (PIM_DEBUG_PIM_TRACE)
 		zlog_debug(
@@ -1368,12 +1400,13 @@ void pim_ifchannel_set_star_g_join_state(struct pim_ifchannel *ch, int eom,
 			if (child->ifjoin_state == PIM_IFJOIN_PRUNE_PENDING_TMP)
 				THREAD_OFF(child->t_ifjoin_prune_pending_timer);
 			THREAD_OFF(child->t_ifjoin_expiry_timer);
-			struct pim_upstream *parent = child->upstream->parent;
 
 			PIM_IF_FLAG_UNSET_S_G_RPT(child->flags);
 			child->ifjoin_state = PIM_IFJOIN_NOINFO;
 
-			if (I_am_RP(pim, child->sg.grp)) {
+			if ((I_am_RP(pim, child->sg.grp)) &&
+			    (!pim_upstream_empty_inherited_olist(
+				child->upstream))) {
 				pim_channel_add_oif(
 					child->upstream->channel_oil,
 					ch->interface, PIM_OIF_FLAG_PROTO_STAR);
@@ -1383,19 +1416,20 @@ void pim_ifchannel_set_star_g_join_state(struct pim_ifchannel *ch, int eom,
 					&child->upstream->rpf, child->upstream,
 					true);
 			}
-			if (parent)
-				pim_jp_agg_single_upstream_send(&parent->rpf,
-								parent, true);
+			send_upstream_starg = true;
 
 			delete_on_noinfo(child);
 			break;
 		}
 	}
+
+	if (send_upstream_starg)
+		pim_jp_agg_single_upstream_send(&starup->rpf, starup, true);
 }
 
-unsigned int pim_ifchannel_hash_key(void *arg)
+unsigned int pim_ifchannel_hash_key(const void *arg)
 {
-	struct pim_ifchannel *ch = (struct pim_ifchannel *)arg;
+	const struct pim_ifchannel *ch = arg;
 
 	return jhash_2words(ch->sg.src.s_addr, ch->sg.grp.s_addr, 0);
 }

@@ -26,19 +26,44 @@
 #include "qobj.h"
 #include "vty.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 DECLARE_MTYPE(ROUTE_MAP_NAME)
 DECLARE_MTYPE(ROUTE_MAP_RULE)
 DECLARE_MTYPE(ROUTE_MAP_COMPILED)
+
+/*
+ * Route-map match or set result "Eg: match evpn vni xx"
+ * route-map match cmd always returns match/nomatch/noop
+ *    match--> found a match
+ *    nomatch--> didnt find a match
+ *    noop--> invalid
+ * route-map set retuns okay/error
+ *    okay --> set was successful
+ *    error --> set was not successful
+ */
+enum route_map_match_result_t {
+	/*
+	 * route-map match cmd results
+	 */
+	RMAP_MATCH,
+	RMAP_NOMATCH,
+	RMAP_NOOP,
+	/*
+	 * route-map set cmd results
+	 */
+	RMAP_OKAY,
+	RMAP_ERROR
+};
 
 /* Route map's type. */
 enum route_map_type { RMAP_PERMIT, RMAP_DENY, RMAP_ANY };
 
 typedef enum {
-	RMAP_MATCH,
 	RMAP_DENYMATCH,
-	RMAP_NOMATCH,
-	RMAP_ERROR,
-	RMAP_OKAY
+	RMAP_PERMITMATCH
 } route_map_result_t;
 
 typedef enum {
@@ -87,10 +112,10 @@ struct route_map_rule_cmd {
 	const char *str;
 
 	/* Function for value set or match. */
-	route_map_result_t (*func_apply)(void *rule,
-					 const struct prefix *prefix,
-					 route_map_object_t type,
-					 void *object);
+	enum route_map_match_result_t (*func_apply)(void *rule,
+						    const struct prefix *prefix,
+						    route_map_object_t type,
+						    void *object);
 
 	/* Compile argument and return result as void *. */
 	void *(*func_compile)(const char *);
@@ -234,7 +259,15 @@ extern route_map_result_t route_map_apply(struct route_map *map,
 
 extern void route_map_add_hook(void (*func)(const char *));
 extern void route_map_delete_hook(void (*func)(const char *));
-extern void route_map_event_hook(void (*func)(route_map_event_t, const char *));
+
+/*
+ * This is the callback for when something has changed about a
+ * route-map.  The interested parties can register to receive
+ * this data.
+ *
+ * name - Is the name of the changed route-map
+ */
+extern void route_map_event_hook(void (*func)(const char *name));
 extern int route_map_mark_updated(const char *name);
 extern void route_map_walk_update_list(void (*update_fn)(char *name));
 extern void route_map_upd8_dependency(route_map_event_t type, const char *arg,
@@ -387,5 +420,9 @@ extern void route_map_counter_increment(struct route_map *map);
 
 /* Decrement the route-map used counter */
 extern void route_map_counter_decrement(struct route_map *map);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _ZEBRA_ROUTEMAP_H */

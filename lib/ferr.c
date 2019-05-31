@@ -61,7 +61,7 @@ static void err_key_fini(void)
 /*
  * Global shared hash table holding reference text for all defined errors.
  */
-pthread_mutex_t refs_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t refs_mtx = PTHREAD_MUTEX_INITIALIZER;
 struct hash *refs;
 
 static bool ferr_hash_cmp(const void *a, const void *b)
@@ -72,9 +72,9 @@ static bool ferr_hash_cmp(const void *a, const void *b)
 	return f_a->code == f_b->code;
 }
 
-static inline unsigned int ferr_hash_key(void *a)
+static inline unsigned int ferr_hash_key(const void *a)
 {
-	struct log_ref *f = a;
+	const struct log_ref *f = a;
 
 	return f->code;
 }

@@ -7,7 +7,7 @@
 ##
 AC_PREREQ([2.60])
 
-AC_INIT([frr], [7.1-dev], [https://github.com/frrouting/frr/issues])
+AC_INIT([frr], [7.2-dev], [https://github.com/frrouting/frr/issues])
 PACKAGE_URL="https://frrouting.org/"
 AC_SUBST([PACKAGE_URL])
 PACKAGE_FULLNAME="FRRouting"
@@ -126,12 +126,15 @@ dnl Check CC and friends
 dnl --------------------
 dnl note orig_cflags is also used further down
 orig_cflags="$CFLAGS"
+orig_cxxflags="$CXXFLAGS"
 AC_LANG([C])
 AC_PROG_CC
 AC_PROG_CPP
+AC_PROG_CXX
 AM_PROG_CC_C_O
 dnl remove autoconf default "-g -O2"
 CFLAGS="$orig_cflags"
+CXXFLAGS="$orig_cxxflags"
 AC_PROG_CC_C99
 dnl NB: see C11 below
 
@@ -147,7 +150,7 @@ dnl - specifically, options to control warnings
 
 AC_USE_SYSTEM_EXTENSIONS
 AC_DEFUN([AC_C_FLAG], [{
-    m4_pushdef([cachename],[m4_translit([frr_cv_$1],[ =-],[___])])
+    m4_pushdef([cachename],[m4_translit([frr_cv_$1],[ =-+],[____])])
     AC_CACHE_CHECK([[whether $CC supports $1]], cachename, [
 	AC_LANG_PUSH([C])
 	ac_c_flag_save="$CFLAGS"
@@ -219,9 +222,12 @@ elif test "x${enable_dev_build}" = "xyes"; then
       AC_C_FLAG([-O0])
    fi
    if test "x${enable_lua}" = "xyes"; then
-      AC_CHECK_LIB([lua], [lua_newstate],
-      [LIBS="$LIBS -llua"])
-      AC_DEFINE([HAVE_LUA], [1], [Lua enabled for development])
+      AX_PROG_LUA([5.3])
+      AX_LUA_HEADERS
+      AX_LUA_LIBS([
+         AC_DEFINE([HAVE_LUA], [1], [Have support for Lua interpreter])
+         LIBS="$LIBS $LUA_LIB"
+      ])
    fi
 else
    if test "x${enable_lua}" = "xyes"; then
@@ -260,6 +266,9 @@ else
 fi
 AC_C_FLAG([-Wno-unused-parameter])
 AC_C_FLAG([-Wno-missing-field-initializers])
+
+AC_C_FLAG([-Wc++-compat], [], [CXX_COMPAT_CFLAGS="-Wc++-compat"])
+AC_SUBST([CXX_COMPAT_CFLAGS])
 
 dnl ICC emits a broken warning for const char *x = a ? "b" : "c";
 dnl for some reason the string consts get 'promoted' to char *,
@@ -434,6 +443,8 @@ AC_ARG_ENABLE([fabricd],
   AS_HELP_STRING([--disable-fabricd], [do not build fabricd]))
 AC_ARG_ENABLE([bgp-announce],
   AS_HELP_STRING([--disable-bgp-announce,], [turn off BGP route announcement]))
+AC_ARG_ENABLE([vrrpd],
+  AS_HELP_STRING([--disable-vrrpd], [do not build vrrpd]))
 AC_ARG_ENABLE([bgp-vnc],
   AS_HELP_STRING([--disable-bgp-vnc],[turn off BGP VNC support]))
 AC_ARG_ENABLE([snmp],
@@ -444,6 +455,8 @@ AC_ARG_ENABLE([confd],
   AS_HELP_STRING([--enable-confd=ARG], [enable confd integration]))
 AC_ARG_ENABLE([sysrepo],
   AS_HELP_STRING([--enable-sysrepo], [enable sysrepo integration]))
+AC_ARG_ENABLE([grpc],
+  AS_HELP_STRING([--enable-grpc], [enable the gRPC northbound plugin]))
 AC_ARG_ENABLE([zeromq],
   AS_HELP_STRING([--enable-zeromq], [enable ZeroMQ handler (libfrrzmq)]))
 AC_ARG_WITH([libpam],
@@ -762,7 +775,7 @@ AC_DEFINE_UNQUOTED([CONFIGFILE_MASK], [${enable_configfile_mask}], [Mask for con
 enable_logfile_mask=${enable_logfile_mask:-0600}
 AC_DEFINE_UNQUOTED([LOGFILE_MASK], [${enable_logfile_mask}], [Mask for log files])
 
-MPATH_NUM=1
+MPATH_NUM=16
 
 case "${enable_multipath}" in
   0)
@@ -922,6 +935,80 @@ AC_CHECK_HEADERS([pthread_np.h],,, [
 #include <pthread.h>
 ])
 AC_CHECK_FUNCS([pthread_setname_np pthread_set_name_np])
+
+needsync=true
+
+AS_IF([$needsync], [
+  dnl Linux
+  AC_MSG_CHECKING([for Linux futex() support])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <unistd.h>
+#include <limits.h>
+#include <sys/time.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
+
+int main(void);
+],
+[
+{
+  return syscall(SYS_futex, NULL, FUTEX_WAIT, 0, NULL, NULL, 0);
+}
+])], [
+    AC_MSG_RESULT([yes])
+    AC_DEFINE(HAVE_SYNC_LINUX_FUTEX,,Have Linux futex support)
+    needsync=false
+  ], [
+    AC_MSG_RESULT([no])
+  ])
+])
+
+AS_IF([$needsync], [
+  dnl FreeBSD
+  AC_MSG_CHECKING([for FreeBSD _umtx_op() support])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/umtx.h>
+int main(void);
+],
+[
+{
+  return _umtx_op(NULL, UMTX_OP_WAIT_UINT, 0, NULL, NULL);
+}
+])], [
+    AC_MSG_RESULT([yes])
+    AC_DEFINE(HAVE_SYNC_UMTX_OP,,Have FreeBSD _umtx_op() support)
+    needsync=false
+  ], [
+    AC_MSG_RESULT([no])
+  ])
+])
+
+AS_IF([$needsync], [
+  dnl OpenBSD patch (not upstream at the time of writing this)
+  dnl https://marc.info/?l=openbsd-tech&m=147299508409549&w=2
+  AC_MSG_CHECKING([for OpenBSD futex() support])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([
+#include <sys/futex.h>
+int main(void);
+],
+[
+{
+  return futex(NULL, FUTEX_WAIT, 0, NULL, NULL, 0);
+}
+])], [
+    AC_MSG_RESULT([yes])
+    AC_DEFINE(HAVE_SYNC_OPENBSD_FUTEX,,Have OpenBSD futex support)
+    needsync=false
+  ], [
+    AC_MSG_RESULT([no])
+  ])
+])
 
 dnl Utility macro to avoid retyping includes all the time
 m4_define([FRR_INCLUDES],
@@ -1517,6 +1604,7 @@ AM_CONDITIONAL([PBRD], [test "${enable_pbrd}" != "no"])
 AM_CONDITIONAL([SHARPD], [test "${enable_sharpd}" = "yes"])
 AM_CONDITIONAL([STATICD], [test "${enable_staticd}" != "no"])
 AM_CONDITIONAL([FABRICD], [test "${enable_fabricd}" != "no"])
+AM_CONDITIONAL([VRRPD], [test "${enable_vrrpd}" != "no"])
 
 if test "${enable_bgp_announce}" = "no";then
   AC_DEFINE([DISABLE_BGP_ANNOUNCE], [1], [Disable BGP installation to zebra])
@@ -1608,28 +1696,10 @@ CFLAGS="$CFLAGS $LIBYANG_CFLAGS"
 AC_CHECK_MEMBER([struct lyd_node.priv], [], [
   AC_MSG_ERROR([m4_normalize([
     libyang needs to be compiled with ENABLE_LYD_PRIV=ON.
-    See http://docs.frrouting.org/projects/dev-guide/en/latest/building-libyang.html for details.])
+    Instructions for this are included in the build documentation for your platform at http://docs.frrouting.org/projects/dev-guide/en/latest/building.html])
   ])
 ], [[#include <libyang/libyang.h>]])
 CFLAGS="$ac_cflags_save"
-
-ac_libs_save="$LIBS"
-LIBS="$LIBS $LIBYANG_LIBS"
-AC_CHECK_FUNC([ly_register_types], [
-  libyang_ext_builtin=true
-  AC_DEFINE([LIBYANG_EXT_BUILTIN], [1], [have ly_register_types()])
-], [
-  libyang_ext_builtin=false
-  AC_MSG_WARN([===== old libyang (before 0.16.74) detected =====])
-  AC_MSG_WARN([The available version of libyang does not seem to support])
-  AC_MSG_WARN([built-in YANG extension modules.  This will cause "make check"])
-  AC_MSG_WARN([to fail and may create installation and version mismatch issues.])
-  AC_MSG_WARN([Support for the old mechanism will be removed at some point.])
-  AC_MSG_WARN([Please update libyang to version 0.16.74 or newer.])
-  AC_MSG_WARN([===== old libyang (before 0.16.74) detected =====])
-])
-AM_CONDITIONAL([LIBYANG_EXT_BUILTIN], [$libyang_ext_builtin])
-LIBS="$ac_libs_save"
 
 dnl ---------------
 dnl configuration rollbacks
@@ -1656,6 +1726,8 @@ if test "$enable_confd" != "" -a "$enable_confd" != "no"; then
    fi
    CONFD_CFLAGS="-I${enable_confd}/include -L${enable_confd}/lib"
    AC_SUBST([CONFD_CFLAGS])
+   CONFD_LIBS="-lconfd"
+   AC_SUBST([CONFD_LIBS])
    AC_DEFINE([HAVE_CONFD], [1], [Enable confd integration])
 fi
 AM_CONDITIONAL([CONFD], [test "x$enable_confd" != "x"])
@@ -1672,6 +1744,25 @@ if test "$enable_sysrepo" = "yes"; then
   )
 fi
 AM_CONDITIONAL([SYSREPO], [test "x$enable_sysrepo" = "xyes"])
+
+dnl ---------------
+dnl gRPC
+dnl ---------------
+if test "$enable_grpc" = "yes"; then
+  PKG_CHECK_MODULES([GRPC], [grpc grpc++ protobuf], [
+    AC_CHECK_PROGS([PROTOC], [protoc], [/bin/false])
+    if test "$PROTOC" = "/bin/false"; then
+      AC_MSG_FAILURE([grpc requested but protoc not found.])
+    fi
+
+    AC_DEFINE([HAVE_GRPC], [1], [Enable the gRPC northbound plugin])
+    GRPC=true
+  ], [
+    GRPC=false
+    AC_MSG_ERROR([grpc/grpc++ were not found on your system.])
+  ])
+fi
+AM_CONDITIONAL([GRPC], [test "x$enable_grpc" = "xyes"])
 
 dnl ---------------
 dnl math
@@ -1738,7 +1829,8 @@ AC_CHECK_TYPES([
 	vifi_t, struct sioc_vif_req, struct igmpmsg,
 	struct ifaliasreq, struct if6_aliasreq, struct in6_aliasreq,
 	struct nd_opt_adv_interval, struct rt_addrinfo,
-	struct nd_opt_homeagent_info, struct nd_opt_adv_interval],
+	struct nd_opt_homeagent_info, struct nd_opt_adv_interval,
+	struct nd_opt_rdnss, struct nd_opt_dnssl],
 	[], [], FRR_INCLUDES)
 
 AC_CHECK_MEMBERS([struct sockaddr.sa_len,
@@ -2151,6 +2243,7 @@ AC_SUBST([CFG_LIBYANG_PLUGINS])
 AC_DEFINE_UNQUOTED([MODULE_PATH], ["$CFG_MODULE"], [path to modules])
 AC_DEFINE_UNQUOTED([YANG_MODELS_PATH], ["$CFG_YANGMODELS"], [path to YANG data models])
 AC_DEFINE_UNQUOTED([LIBYANG_PLUGINS_PATH], ["$CFG_LIBYANG_PLUGINS"], [path to libyang plugins])
+AC_DEFINE_UNQUOTED([WATCHFRR_SH_PATH], ["${CFG_SBIN%/}/watchfrr.sh"], [path to watchfrr.sh])
 
 dnl ------------------------------------
 dnl Enable RPKI and add librtr to libs
@@ -2190,9 +2283,9 @@ AC_CONFIG_FILES([Makefile],[sed -e 's/^#AUTODERP# //' -i Makefile])
 
 AC_CONFIG_FILES([
 	  config.version
+	  changelog-auto
 	  redhat/frr.spec
 	  solaris/Makefile
-	  debianpkg/changelog
 	  alpine/APKBUILD
 	  snapcraft/snapcraft.yaml
 	  lib/version.h

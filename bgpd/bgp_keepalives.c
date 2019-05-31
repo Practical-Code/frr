@@ -85,7 +85,7 @@ static void pkat_del(void *pkat)
  *
  * @return maximum time to wait until next update (0 if infinity)
  */
-static void peer_process(struct hash_backet *hb, void *arg)
+static void peer_process(struct hash_bucket *hb, void *arg)
 {
 	struct pkat *pkat = hb->data;
 
@@ -131,9 +131,9 @@ static bool peer_hash_cmp(const void *f, const void *s)
 	return p1->peer == p2->peer;
 }
 
-static unsigned int peer_hash_key(void *arg)
+static unsigned int peer_hash_key(const void *arg)
 {
-	struct pkat *pkat = arg;
+	const struct pkat *pkat = arg;
 	return (uintptr_t)pkat->peer;
 }
 

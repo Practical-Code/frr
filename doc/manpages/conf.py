@@ -129,7 +129,7 @@ language = None
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
-exclude_patterns = ['_build', 'common-options.rst', 'epilogue.rst', 'defines.rst']
+exclude_patterns = ['_build', 'common-options.rst', 'epilogue.rst', 'defines.rst', 'bfd-options.rst']
 
 # The reST default role (used for this markup: `text`) to use for all
 # documents.
@@ -334,6 +334,7 @@ man_pages = [
     ('frr', 'frr', 'a systemd interaction script', [], 1),
     ('bfdd', 'bfdd', fwfrr.format("a bfd"), [], 8),
     ('fabricd', 'fabricd', fwfrr.format("an OpenFabric "), [], 8),
+    ('vrrpd', 'vrrpd', fwfrr.format("a VRRP"), [], 8),
 ]
 
 # -- Options for Texinfo output -------------------------------------------

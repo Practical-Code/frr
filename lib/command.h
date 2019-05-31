@@ -30,8 +30,23 @@
 #include "hash.h"
 #include "command_graph.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 DECLARE_MTYPE(HOST)
 DECLARE_MTYPE(COMPLETION)
+
+/*
+ * From RFC 1123 (Requirements for Internet Hosts), Section 2.1 on hostnames:
+ * One aspect of host name syntax is hereby changed: the restriction on
+ * the first character is relaxed to allow either a letter or a digit.
+ * Host software MUST support this more liberal syntax.
+ *
+ * Host software MUST handle host names of up to 63 characters and
+ * SHOULD handle host names of up to 255 characters.
+ */
+#define HOSTNAME_LEN   255
 
 /* Host configuration variable */
 struct host {
@@ -143,6 +158,7 @@ enum node_type {
 	BFD_NODE,		 /* BFD protocol mode. */
 	BFD_PEER_NODE,		 /* BFD peer configuration mode. */
 	OPENFABRIC_NODE,	/* OpenFabric router configuration node */
+	VRRP_NODE,		 /* VRRP node */
 	NODE_TYPE_MAX, /* maximum */
 };
 
@@ -314,6 +330,9 @@ struct cmd_node {
 
 #define DEFPY_ATTR(funcname, cmdname, cmdstr, helpstr, attr)                   \
 	DEFUN_ATTR(funcname, cmdname, cmdstr, helpstr, attr)
+
+#define DEFPY_HIDDEN(funcname, cmdname, cmdstr, helpstr)                       \
+	DEFUN_HIDDEN(funcname, cmdname, cmdstr, helpstr)
 #endif /* VTYSH_EXTRACT_PL */
 
 /* Some macroes */
@@ -488,4 +507,9 @@ cmd_variable_handler_register(const struct cmd_variable_handler *cvh);
 extern char *cmd_variable_comp2str(vector comps, unsigned short cols);
 
 extern void command_setup_early_logging(const char *dest, const char *level);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* _ZEBRA_COMMAND_H */

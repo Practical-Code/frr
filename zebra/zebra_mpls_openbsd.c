@@ -27,6 +27,7 @@
 #include "zebra/zebra_mpls.h"
 #include "zebra/debug.h"
 #include "zebra/zebra_errors.h"
+#include "zebra/zebra_router.h"
 
 #include "privs.h"
 #include "prefix.h"
@@ -43,7 +44,7 @@ struct {
 } kr_state;
 
 static int kernel_send_rtmsg_v4(int action, mpls_label_t in_label,
-				zebra_nhlfe_t *nhlfe)
+				const zebra_nhlfe_t *nhlfe)
 {
 	struct iovec iov[5];
 	struct rt_msghdr hdr;
@@ -135,7 +136,7 @@ static int kernel_send_rtmsg_v4(int action, mpls_label_t in_label,
 #endif
 
 static int kernel_send_rtmsg_v6(int action, mpls_label_t in_label,
-				zebra_nhlfe_t *nhlfe)
+				const zebra_nhlfe_t *nhlfe)
 {
 	struct iovec iov[5];
 	struct rt_msghdr hdr;
@@ -238,7 +239,7 @@ static int kernel_send_rtmsg_v6(int action, mpls_label_t in_label,
 
 static int kernel_lsp_cmd(struct zebra_dplane_ctx *ctx)
 {
-	zebra_nhlfe_t *nhlfe;
+	const zebra_nhlfe_t *nhlfe;
 	struct nexthop *nexthop = NULL;
 	unsigned int nexthop_num = 0;
 	int action;
@@ -262,7 +263,7 @@ static int kernel_lsp_cmd(struct zebra_dplane_ctx *ctx)
 		if (!nexthop)
 			continue;
 
-		if (nexthop_num >= multipath_num)
+		if (nexthop_num >= zrouter.multipath_num)
 			break;
 
 		if (((action == RTM_ADD || action == RTM_CHANGE)
@@ -342,7 +343,7 @@ static enum zebra_dplane_result kmpw_install(struct zebra_dplane_ctx *ctx)
 
 	/* pseudowire nexthop */
 	memset(&ss, 0, sizeof(ss));
-	gaddr = dplane_ctx_get_pw_nexthop(ctx);
+	gaddr = dplane_ctx_get_pw_dest(ctx);
 	switch (dplane_ctx_get_pw_af(ctx)) {
 	case AF_INET:
 		sa_in->sin_family = AF_INET;
@@ -415,7 +416,7 @@ enum zebra_dplane_result kernel_pw_update(struct zebra_dplane_ctx *ctx)
 		break;
 	default:
 		break;
-	};
+	}
 
 	return result;
 }

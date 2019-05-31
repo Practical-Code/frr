@@ -24,6 +24,7 @@
 
 #include "zebra.h"
 #include "hook.h"
+#include "typesafe.h"
 #include "linklist.h"
 #include "prefix.h"
 #include "table.h"
@@ -35,16 +36,62 @@
 #include "mpls.h"
 #include "srcdest_table.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum { RNH_NEXTHOP_TYPE, RNH_IMPORT_CHECK_TYPE } rnh_type_t;
+
+PREDECL_LIST(rnh_list)
+
+/* Nexthop structure. */
+struct rnh {
+	uint8_t flags;
+
+#define ZEBRA_NHT_CONNECTED     0x1
+#define ZEBRA_NHT_DELETED       0x2
+#define ZEBRA_NHT_EXACT_MATCH   0x4
+
+	/* VRF identifier. */
+	vrf_id_t vrf_id;
+
+	afi_t afi;
+
+	rnh_type_t type;
+
+	uint32_t seqno;
+
+	struct route_entry *state;
+	struct prefix resolved_route;
+	struct list *client_list;
+
+	/* pseudowires dependent on this nh */
+	struct list *zebra_pseudowire_list;
+
+	struct route_node *node;
+
+	/*
+	 * if this has been filtered for the client
+	 */
+	int filtered[ZEBRA_ROUTE_MAX];
+
+	struct rnh_list_item rnh_list_item;
+};
+
 #define DISTANCE_INFINITY  255
 #define ZEBRA_KERNEL_TABLE_MAX 252 /* support for no more than this rt tables */
 
+PREDECL_LIST(re_list)
+
 struct route_entry {
 	/* Link list. */
-	struct route_entry *next;
-	struct route_entry *prev;
+	struct re_list_item next;
 
-	/* Nexthop structure */
+	/* Nexthop structure (from RIB) */
 	struct nexthop_group ng;
+
+	/* Nexthop group from FIB (optional) */
+	struct nexthop_group fib_ng;
 
 	/* Tag */
 	route_tag_t tag;
@@ -54,9 +101,6 @@ struct route_entry {
 
 	/* Type fo this route. */
 	int type;
-
-	/* Source protocol instance */
-	unsigned short instance;
 
 	/* VRF identifier. */
 	vrf_id_t vrf_id;
@@ -70,9 +114,6 @@ struct route_entry {
 	/* MTU */
 	uint32_t mtu;
 	uint32_t nexthop_mtu;
-
-	/* Distance. */
-	uint8_t distance;
 
 	/* Flags of this route.
 	 * This flag's definition is in lib/zebra.h ZEBRA_FLAG_* and is exposed
@@ -102,7 +143,17 @@ struct route_entry {
 
 	/* Sequence value incremented for each dataplane operation */
 	uint32_t dplane_sequence;
+
+	/* Source protocol instance */
+	uint16_t instance;
+
+	/* Distance. */
+	uint8_t distance;
 };
+
+#define RIB_SYSTEM_ROUTE(R) RSYSTEM_ROUTE((R)->type)
+
+#define RIB_KERNEL_ROUTE(R) RKERNEL_ROUTE((R)->type)
 
 /* meta-queue structure:
  * sub-queue 0: connected, kernel
@@ -131,7 +182,7 @@ typedef struct rib_dest_t_ {
 	/*
 	 * Doubly-linked list of routes for this prefix.
 	 */
-	struct route_entry *routes;
+	struct re_list_head routes;
 
 	struct route_entry *selected_fib;
 
@@ -141,11 +192,23 @@ typedef struct rib_dest_t_ {
 	uint32_t flags;
 
 	/*
+	 * The list of nht prefixes that have ended up
+	 * depending on this route node.
+	 * After route processing is returned from
+	 * the data plane we will run evaluate_rnh
+	 * on these prefixes.
+	 */
+	struct rnh_list_head nht;
+
+	/*
 	 * Linkage to put dest on the FPM processing queue.
 	 */
 	TAILQ_ENTRY(rib_dest_t_) fpm_q_entries;
 
 } rib_dest_t;
+
+DECLARE_LIST(rnh_list, struct rnh, rnh_list_item);
+DECLARE_LIST(re_list, struct route_entry, next);
 
 #define RIB_ROUTE_QUEUED(x)	(1 << (x))
 // If MQ_SIZE is modified this value needs to be updated.
@@ -168,18 +231,22 @@ typedef struct rib_dest_t_ {
  */
 #define RIB_DEST_UPDATE_FPM    (1 << (ZEBRA_MAX_QINDEX + 2))
 
+#define RIB_DEST_UPDATE_LSPS   (1 << (ZEBRA_MAX_QINDEX + 3))
+
 /*
  * Macro to iterate over each route for a destination (prefix).
  */
 #define RE_DEST_FOREACH_ROUTE(dest, re)                                        \
-	for ((re) = (dest) ? (dest)->routes : NULL; (re); (re) = (re)->next)
+	for ((re) = (dest) ? re_list_first(&((dest)->routes)) : NULL; (re);    \
+	     (re) = re_list_next(&((dest)->routes), (re)))
 
 /*
  * Same as above, but allows the current node to be unlinked.
  */
 #define RE_DEST_FOREACH_ROUTE_SAFE(dest, re, next)                             \
-	for ((re) = (dest) ? (dest)->routes : NULL;                            \
-	     (re) && ((next) = (re)->next, 1); (re) = (next))
+	for ((re) = (dest) ? re_list_first(&((dest)->routes)) : NULL;          \
+	     (re) && ((next) = re_list_next(&((dest)->routes), (re)), 1);      \
+	     (re) = (next))
 
 #define RNODE_FOREACH_RE(rn, re)                                               \
 	RE_DEST_FOREACH_ROUTE (rib_dest_from_rnode(rn), re)
@@ -336,7 +403,7 @@ extern struct route_entry *rib_lookup_ipv4(struct prefix_ipv4 *p,
 extern void rib_update(vrf_id_t vrf_id, rib_update_event_t event);
 extern void rib_update_table(struct route_table *table,
 			     rib_update_event_t event);
-extern void rib_sweep_route(void);
+extern int rib_sweep_route(struct thread *t);
 extern void rib_sweep_table(struct route_table *table);
 extern void rib_close_table(struct route_table *table);
 extern void rib_init(void);
@@ -354,6 +421,8 @@ extern int rib_gc_dest(struct route_node *rn);
 extern struct route_table *rib_tables_iter_next(rib_tables_iter_t *iter);
 
 extern uint8_t route_distance(int type);
+
+extern void zebra_rib_evaluate_rn_nexthops(struct route_node *rn, uint32_t seq);
 
 /*
  * Inline functions.
@@ -389,7 +458,7 @@ static inline struct route_entry *rnode_to_ribs(struct route_node *rn)
 	if (!dest)
 		return NULL;
 
-	return dest->routes;
+	return re_list_first(&dest->routes);
 }
 
 /*
@@ -427,6 +496,11 @@ static inline struct zebra_vrf *rib_dest_vrf(rib_dest_t *dest)
 }
 
 /*
+ * Create the rib_dest_t and attach it to the specified node
+ */
+extern rib_dest_t *zebra_rib_create_dest(struct route_node *rn);
+
+/*
  * rib_tables_iter_init
  */
 static inline void rib_tables_iter_init(rib_tables_iter_t *iter)
@@ -458,10 +532,25 @@ static inline void rib_tables_iter_cleanup(rib_tables_iter_t *iter)
 DECLARE_HOOK(rib_update, (struct route_node * rn, const char *reason),
 	     (rn, reason))
 
+/*
+ * Access active nexthop-group, either RIB or FIB version
+ */
+static inline struct nexthop_group *rib_active_nhg(struct route_entry *re)
+{
+	if (re->fib_ng.nexthop)
+		return &(re->fib_ng);
+	else
+		return &(re->ng);
+}
 
 extern void zebra_vty_init(void);
 
 extern pid_t pid;
 
 extern bool v6_rr_semantics;
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /*_ZEBRA_RIB_H */

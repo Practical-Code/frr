@@ -177,8 +177,7 @@ struct ospf6_interface *ospf6_interface_create(struct interface *ifp)
 	struct ospf6_interface *oi;
 	unsigned int iobuflen;
 
-	oi = (struct ospf6_interface *)XCALLOC(MTYPE_OSPF6_IF,
-					       sizeof(struct ospf6_interface));
+	oi = XCALLOC(MTYPE_OSPF6_IF, sizeof(struct ospf6_interface));
 
 	oi->area = (struct ospf6_area *)NULL;
 	oi->neighbor_list = list_new();
@@ -268,6 +267,9 @@ void ospf6_interface_delete(struct ospf6_interface *oi)
 		XFREE(MTYPE_CFG_PLIST_NAME, oi->plist_name);
 
 	ospf6_bfd_info_free(&(oi->bfd_info));
+
+	/* disable from area list if possible */
+	ospf6_area_interface_delete(oi);
 
 	XFREE(MTYPE_OSPF6_IF, oi);
 }

@@ -35,6 +35,10 @@
 #include "ipaddr.h"
 #include "compiler.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef ETH_ALEN
 #define ETH_ALEN 6
 #endif
@@ -276,20 +280,29 @@ struct prefix_sg {
  * side, which strips type safety since the cast will accept any pointer
  * type.)
  */
+#ifndef __cplusplus
+#define prefixtype(uname, typename, fieldname) \
+	typename *fieldname;
+#else
+#define prefixtype(uname, typename, fieldname) \
+	typename *fieldname; \
+	uname(typename *x) { this->fieldname = x; }
+#endif
+
 union prefixptr {
-	struct prefix *p;
-	struct prefix_ipv4 *p4;
-	struct prefix_ipv6 *p6;
-	struct prefix_evpn *evp;
-	const struct prefix_fs *fs;
+	prefixtype(prefixptr, struct prefix,      p)
+	prefixtype(prefixptr, struct prefix_ipv4, p4)
+	prefixtype(prefixptr, struct prefix_ipv6, p6)
+	prefixtype(prefixptr, struct prefix_evpn, evp)
+	prefixtype(prefixptr, struct prefix_fs,   fs)
 } __attribute__((transparent_union));
 
 union prefixconstptr {
-	const struct prefix *p;
-	const struct prefix_ipv4 *p4;
-	const struct prefix_ipv6 *p6;
-	const struct prefix_evpn *evp;
-	const struct prefix_fs *fs;
+	prefixtype(prefixconstptr, const struct prefix,      p)
+	prefixtype(prefixconstptr, const struct prefix_ipv4, p4)
+	prefixtype(prefixconstptr, const struct prefix_ipv6, p6)
+	prefixtype(prefixconstptr, const struct prefix_evpn, evp)
+	prefixtype(prefixconstptr, const struct prefix_fs,   fs)
 } __attribute__((transparent_union));
 
 #ifndef INET_ADDRSTRLEN
@@ -307,6 +320,15 @@ union prefixconstptr {
 
 /* Maximum string length of the result of prefix2str */
 #define PREFIX_STRLEN 80
+
+/*
+ * Longest possible length of a (S,G) string is 36 bytes
+ * 123.123.123.123 = 15 * 2
+ * (,) = 3
+ * NULL Character at end = 1
+ * (123.123.123.123,123.123.123.123)
+ */
+#define PREFIX_SG_STR_LEN 34
 
 /* Max bit/byte length of IPv4 address. */
 #define IPV4_MAX_BYTELEN    4
@@ -381,6 +403,9 @@ extern int str2prefix(const char *, struct prefix *);
 
 #define PREFIX2STR_BUFFER  PREFIX_STRLEN
 
+extern void prefix_mcast_inet4_dump(const char *onfail, struct in_addr addr,
+				char *buf, int buf_size);
+extern const char *prefix_sg2str(const struct prefix_sg *sg, char *str);
 extern const char *prefix2str(union prefixconstptr, char *, int);
 extern int prefix_match(const struct prefix *, const struct prefix *);
 extern int prefix_match_network_statement(const struct prefix *,
@@ -441,7 +466,7 @@ extern int is_zero_mac(struct ethaddr *mac);
 extern int prefix_str2mac(const char *str, struct ethaddr *mac);
 extern char *prefix_mac2str(const struct ethaddr *mac, char *buf, int size);
 
-extern unsigned prefix_hash_key(void *pp);
+extern unsigned prefix_hash_key(const void *pp);
 
 extern int str_to_esi(const char *str, esi_t *esi);
 extern char *esi_to_str(const esi_t *esi, char *buf, int size);
@@ -497,4 +522,22 @@ static inline int is_host_route(struct prefix *p)
 		return (p->prefixlen == IPV6_MAX_BITLEN);
 	return 0;
 }
+
+static inline int is_default_host_route(struct prefix *p)
+{
+	if (p->family == AF_INET) {
+		return (p->u.prefix4.s_addr == INADDR_ANY &&
+			p->prefixlen == IPV4_MAX_BITLEN);
+	} else if (p->family == AF_INET6) {
+		return ((!memcmp(&p->u.prefix6, &in6addr_any,
+				 sizeof(struct in6_addr))) &&
+			p->prefixlen == IPV6_MAX_BITLEN);
+	}
+	return 0;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* _ZEBRA_PREFIX_H */

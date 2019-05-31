@@ -310,7 +310,8 @@ void bgp_timer_set(struct peer *peer)
 		   status start timer is on unless peer is shutdown or peer is
 		   inactive.  All other timer must be turned off */
 		if (BGP_PEER_START_SUPPRESSED(peer) || !peer_active(peer)
-		    || peer->bgp->vrf_id == VRF_UNKNOWN) {
+		    || (peer->bgp->inst_type != BGP_INSTANCE_TYPE_VIEW &&
+			peer->bgp->vrf_id == VRF_UNKNOWN)) {
 			BGP_TIMER_OFF(peer->t_start);
 		} else {
 			BGP_TIMER_ON(peer->t_start, bgp_start_timer,
@@ -948,9 +949,15 @@ void bgp_fsm_change_status(struct peer *peer, int status)
 	else if ((peer->status == Established) && (status != Established))
 		bgp->established_peers--;
 
-	if (BGP_DEBUG(neighbor_events, NEIGHBOR_EVENTS))
-		zlog_debug("%s : vrf %u, established_peers %u", __func__,
-				bgp->vrf_id, bgp->established_peers);
+	if (bgp_debug_neighbor_events(peer)) {
+		struct vrf *vrf = vrf_lookup_by_id(bgp->vrf_id);
+
+		zlog_debug("%s : vrf %s(%u), Status: %s established_peers %u", __func__,
+			   vrf ? vrf->name : "Unknown", bgp->vrf_id,
+			   lookup_msg(bgp_status_msg, status, NULL),
+			   bgp->established_peers);
+	}
+
 	/* Set to router ID to the value provided by RIB if there are no peers
 	 * in the established state and peer count did not change
 	 */
@@ -1114,8 +1121,6 @@ int bgp_stop(struct peer *peer)
 
 		/* Reset peer synctime */
 		peer->synctime = 0;
-
-		bgp_bfd_deregister_peer(peer);
 	}
 
 	/* stop keepalives */
@@ -1422,7 +1427,8 @@ int bgp_start(struct peer *peer)
 		return 0;
 	}
 
-	if (peer->bgp->vrf_id == VRF_UNKNOWN) {
+	if (peer->bgp->inst_type != BGP_INSTANCE_TYPE_VIEW &&
+	    peer->bgp->vrf_id == VRF_UNKNOWN) {
 		if (bgp_debug_neighbor_events(peer))
 			flog_err(
 				EC_BGP_FSM,
@@ -1752,7 +1758,7 @@ static int bgp_fsm_exeption(struct peer *peer)
 	return (bgp_stop(peer));
 }
 
-void bgp_fsm_nht_update(struct peer *peer, int valid)
+void bgp_fsm_event_update(struct peer *peer, int valid)
 {
 	if (!peer)
 		return;
@@ -1785,7 +1791,6 @@ void bgp_fsm_nht_update(struct peer *peer, int valid)
 		break;
 	}
 }
-
 
 /* Finite State Machine structure */
 static const struct {

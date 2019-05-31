@@ -287,8 +287,8 @@ Terminal Mode Commands
 
    Write current configuration to configuration file.
 
-.. index:: configure terminal
-.. clicmd:: configure terminal
+.. index:: configure [terminal]
+.. clicmd:: configure [terminal]
 
    Change to configuration mode. This command is the first step to
    configuration.
@@ -390,7 +390,7 @@ Terminal Mode Commands
 .. index:: find COMMAND...
 .. clicmd:: find COMMAND...
 
-   This commmand performs a simple substring search across all defined commands
+   This command performs a simple substring search across all defined commands
    in all modes. As an example, suppose you're in enable mode and can't
    remember where the command to turn OSPF segment routing on is:
 
@@ -414,6 +414,22 @@ Terminal Mode Commands
         (view)  show [ip] bgp l2vpn evpn all overlay
         ...
 
+.. _common-show-commands:
+
+.. index:: show thread cpu
+.. clicmd:: show thread cpu [r|w|t|e|x]
+
+   This command displays system run statistics for all the different event
+   types. If no options is specified all different run types are displayed
+   together.  Additionally you can ask to look at (r)ead, (w)rite, (t)imer,
+   (e)vent and e(x)ecute thread event types.
+
+.. index:: show thread poll
+.. clicmd:: show thread poll
+
+   This command displays FRR's poll data.  It allows a glimpse into how
+   we are setting each individual fd for the poll command at that point
+   in time.
 
 .. _common-invocation-options:
 

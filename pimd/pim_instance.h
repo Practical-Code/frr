@@ -26,6 +26,8 @@
 #include "pim_str.h"
 #include "pim_msdp.h"
 #include "pim_assert.h"
+#include "pim_bsm.h"
+#include "pim_vxlan_instance.h"
 
 #if defined(HAVE_LINUX_MROUTE_H)
 #include <linux/mroute.h>
@@ -110,6 +112,7 @@ struct pim_instance {
 	struct hash *channel_oil_hash;
 
 	struct pim_msdp msdp;
+	struct pim_vxlan_instance vxlan;
 
 	struct list *ssmpingd_list;
 	struct in_addr ssmpingd_group_addr;
@@ -119,6 +122,11 @@ struct pim_instance {
 
 	bool ecmp_enable;
 	bool ecmp_rebalance_enable;
+	/* Bsm related */
+	struct bsm_scope global_scope;
+	uint64_t bsm_rcvd;
+	uint64_t bsm_sent;
+	uint64_t bsm_dropped;
 
 	/* If we need to rescan all our upstreams */
 	struct thread *rpf_cache_refresher;

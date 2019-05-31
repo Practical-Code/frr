@@ -71,6 +71,8 @@
 static void zserv_encode_interface(struct stream *s, struct interface *ifp)
 {
 	/* Interface information. */
+	struct zebra_if *zif = ifp->info;
+
 	stream_put(s, ifp->name, INTERFACE_NAMSIZ);
 	stream_putl(s, ifp->ifindex);
 	stream_putc(s, ifp->status);
@@ -82,6 +84,7 @@ static void zserv_encode_interface(struct stream *s, struct interface *ifp)
 	stream_putl(s, ifp->mtu);
 	stream_putl(s, ifp->mtu6);
 	stream_putl(s, ifp->bandwidth);
+	stream_putl(s, zif->link_ifindex);
 	stream_putl(s, ifp->ll_type);
 	stream_putl(s, ifp->hw_addr_len);
 	if (ifp->hw_addr_len)
@@ -1036,6 +1039,8 @@ static void zread_rnh_register(ZAPI_HANDLER_ARGS)
 	uint8_t flags = 0;
 	uint16_t type = cmd2type[hdr->command];
 	bool exist;
+	bool flag_changed = false;
+	uint8_t orig_flags;
 
 	if (IS_ZEBRA_DEBUG_NHT)
 		zlog_debug(
@@ -1084,6 +1089,7 @@ static void zread_rnh_register(ZAPI_HANDLER_ARGS)
 		if (!rnh)
 			return;
 
+		orig_flags = rnh->flags;
 		if (type == RNH_NEXTHOP_TYPE) {
 			if (flags
 			    && !CHECK_FLAG(rnh->flags, ZEBRA_NHT_CONNECTED))
@@ -1101,11 +1107,15 @@ static void zread_rnh_register(ZAPI_HANDLER_ARGS)
 				UNSET_FLAG(rnh->flags, ZEBRA_NHT_EXACT_MATCH);
 		}
 
-		zebra_add_rnh_client(rnh, client, type, zvrf_id(zvrf));
+		if (orig_flags != rnh->flags)
+			flag_changed = true;
+
 		/* Anything not AF_INET/INET6 has been filtered out above */
-		if (!exist)
+		if (!exist || flag_changed)
 			zebra_evaluate_rnh(zvrf, family2afi(p.family), 1, type,
 					   &p);
+
+		zebra_add_rnh_client(rnh, client, type, zvrf_id(zvrf));
 	}
 
 stream_failure:
@@ -1329,17 +1339,48 @@ static void zread_interface_delete(ZAPI_HANDLER_ARGS)
 {
 }
 
+/*
+ * Handle message requesting interface be set up or down.
+ */
+static void zread_interface_set_protodown(ZAPI_HANDLER_ARGS)
+{
+	ifindex_t ifindex;
+	struct interface *ifp;
+	char down;
+
+	STREAM_GETL(msg, ifindex);
+	STREAM_GETC(msg, down);
+
+	/* set ifdown */
+	ifp = if_lookup_by_index_per_ns(zebra_ns_lookup(NS_DEFAULT), ifindex);
+
+	if (ifp) {
+		zlog_info("Setting interface %s (%u): protodown %s", ifp->name,
+			  ifindex, down ? "on" : "off");
+		zebra_if_set_protodown(ifp, down);
+	} else {
+		zlog_warn(
+			"Cannot set protodown %s for interface %u; does not exist",
+			down ? "on" : "off", ifindex);
+	}
+
+
+stream_failure:
+	return;
+}
+
+
 void zserv_nexthop_num_warn(const char *caller, const struct prefix *p,
 			    const unsigned int nexthop_num)
 {
-	if (nexthop_num > multipath_num) {
+	if (nexthop_num > zrouter.multipath_num) {
 		char buff[PREFIX2STR_BUFFER];
 
 		prefix2str(p, buff, sizeof(buff));
 		flog_warn(
 			EC_ZEBRA_MORE_NH_THAN_MULTIPATH,
 			"%s: Prefix %s has %d nexthops, but we can only use the first %d",
-			caller, buff, nexthop_num, multipath_num);
+			caller, buff, nexthop_num, zrouter.multipath_num);
 	}
 }
 
@@ -1381,7 +1422,7 @@ static void zread_route_add(ZAPI_HANDLER_ARGS)
 	re->type = api.type;
 	re->instance = api.instance;
 	re->flags = api.flags;
-	re->uptime = time(NULL);
+	re->uptime = monotime(NULL);
 	re->vrf_id = vrf_id;
 	if (api.tableid && vrf_id == VRF_DEFAULT)
 		re->table = api.tableid;
@@ -1432,12 +1473,7 @@ static void zread_route_add(ZAPI_HANDLER_ARGS)
 		case NEXTHOP_TYPE_IPV4_IFINDEX:
 
 			memset(&vtep_ip, 0, sizeof(struct ipaddr));
-			if (CHECK_FLAG(api.flags, ZEBRA_FLAG_EVPN_ROUTE)) {
-				ifindex = get_l3vni_svi_ifindex(vrf_id);
-			} else {
-				ifindex = api_nh->ifindex;
-			}
-
+			ifindex = api_nh->ifindex;
 			if (IS_ZEBRA_DEBUG_RECV) {
 				char nhbuf[INET6_ADDRSTRLEN] = {0};
 
@@ -1452,19 +1488,17 @@ static void zread_route_add(ZAPI_HANDLER_ARGS)
 				re, &api_nh->gate.ipv4, NULL, ifindex,
 				api_nh->vrf_id);
 
-			/* if this an EVPN route entry,
-			 * program the nh as neigh
+			/* Special handling for IPv4 routes sourced from EVPN:
+			 * the nexthop and associated MAC need to be installed.
 			 */
 			if (CHECK_FLAG(api.flags, ZEBRA_FLAG_EVPN_ROUTE)) {
-				SET_FLAG(nexthop->flags,
-					 NEXTHOP_FLAG_EVPN_RVTEP);
 				vtep_ip.ipa_type = IPADDR_V4;
 				memcpy(&(vtep_ip.ipaddr_v4),
 				       &(api_nh->gate.ipv4),
 				       sizeof(struct in_addr));
 				zebra_vxlan_evpn_vrf_route_add(
-					vrf_id, &api_nh->rmac, &vtep_ip,
-					&api.prefix);
+					api_nh->vrf_id, &api_nh->rmac,
+					&vtep_ip, &api.prefix);
 			}
 			break;
 		case NEXTHOP_TYPE_IPV6:
@@ -1473,28 +1507,21 @@ static void zread_route_add(ZAPI_HANDLER_ARGS)
 			break;
 		case NEXTHOP_TYPE_IPV6_IFINDEX:
 			memset(&vtep_ip, 0, sizeof(struct ipaddr));
-			if (CHECK_FLAG(api.flags, ZEBRA_FLAG_EVPN_ROUTE)) {
-				ifindex = get_l3vni_svi_ifindex(vrf_id);
-			} else {
-				ifindex = api_nh->ifindex;
-			}
-
+			ifindex = api_nh->ifindex;
 			nexthop = route_entry_nexthop_ipv6_ifindex_add(
 				re, &api_nh->gate.ipv6, ifindex,
 				api_nh->vrf_id);
 
-			/* if this an EVPN route entry,
-			 * program the nh as neigh
+			/* Special handling for IPv6 routes sourced from EVPN:
+			 * the nexthop and associated MAC need to be installed.
 			 */
 			if (CHECK_FLAG(api.flags, ZEBRA_FLAG_EVPN_ROUTE)) {
-				SET_FLAG(nexthop->flags,
-					 NEXTHOP_FLAG_EVPN_RVTEP);
 				vtep_ip.ipa_type = IPADDR_V6;
 				memcpy(&vtep_ip.ipaddr_v6, &(api_nh->gate.ipv6),
 				       sizeof(struct in6_addr));
 				zebra_vxlan_evpn_vrf_route_add(
-					vrf_id, &api_nh->rmac, &vtep_ip,
-					&api.prefix);
+					api_nh->vrf_id, &api_nh->rmac,
+					&vtep_ip, &api.prefix);
 			}
 			break;
 		case NEXTHOP_TYPE_BLACKHOLE:
@@ -1658,7 +1685,7 @@ static void zsend_capabilities(struct zserv *client, struct zebra_vrf *zvrf)
 	zclient_create_header(s, ZEBRA_CAPABILITIES, zvrf->vrf->vrf_id);
 	stream_putl(s, vrf_get_backend());
 	stream_putc(s, mpls_enabled);
-	stream_putl(s, multipath_num);
+	stream_putl(s, zrouter.multipath_num);
 	stream_putc(s, zebra_mlag_get_role());
 
 	stream_putw_at(s, 0, stream_get_endp(s));
@@ -2419,6 +2446,7 @@ void (*zserv_handlers[])(ZAPI_HANDLER_ARGS) = {
 	[ZEBRA_ROUTER_ID_DELETE] = zread_router_id_delete,
 	[ZEBRA_INTERFACE_ADD] = zread_interface_add,
 	[ZEBRA_INTERFACE_DELETE] = zread_interface_delete,
+	[ZEBRA_INTERFACE_SET_PROTODOWN] = zread_interface_set_protodown,
 	[ZEBRA_ROUTE_ADD] = zread_route_add,
 	[ZEBRA_ROUTE_DELETE] = zread_route_del,
 	[ZEBRA_REDISTRIBUTE_ADD] = zebra_redistribute_add,
@@ -2513,6 +2541,9 @@ void zserv_handle_commands(struct zserv *client, struct stream *msg)
 	struct zebra_vrf *zvrf;
 
 	zapi_parse_header(msg, &hdr);
+
+	if (IS_ZEBRA_DEBUG_PACKET && IS_ZEBRA_DEBUG_RECV)
+		zserv_log_message(NULL, msg, &hdr);
 
 #if defined(HANDLE_ZAPI_FUZZING)
 	zserv_write_incoming(msg, hdr.command);

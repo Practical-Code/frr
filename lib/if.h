@@ -27,6 +27,10 @@
 #include "qobj.h"
 #include "hook.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 DECLARE_MTYPE(IF)
 DECLARE_MTYPE(CONNECTED_LABEL)
 
@@ -221,6 +225,10 @@ struct interface {
 	   not work as expected.
 	 */
 	ifindex_t ifindex;
+	/*
+	 * ifindex of parent interface, if any
+	 */
+	ifindex_t link_ifindex;
 #define IFINDEX_INTERNAL	0
 
 	/* Zebra internal interface status */
@@ -290,9 +298,9 @@ struct interface {
 };
 
 RB_HEAD(if_name_head, interface);
-RB_PROTOTYPE(if_name_head, interface, name_entry, if_cmp_func);
+RB_PROTOTYPE(if_name_head, interface, name_entry, if_cmp_func)
 RB_HEAD(if_index_head, interface);
-RB_PROTOTYPE(if_index_head, interface, index_entry, if_cmp_func);
+RB_PROTOTYPE(if_index_head, interface, index_entry, if_cmp_func)
 DECLARE_QOBJ_TYPE(interface)
 
 #define IFNAME_RB_INSERT(vrf, ifp)                                             \
@@ -478,6 +486,8 @@ extern struct connected *if_lookup_address(void *matchaddr, int family,
 					   vrf_id_t vrf_id);
 extern struct interface *if_lookup_prefix(struct prefix *prefix,
 					  vrf_id_t vrf_id);
+size_t if_lookup_by_hwaddr(const uint8_t *hw_addr, size_t addrsz,
+			   struct interface ***result, vrf_id_t vrf_id);
 
 /* These 3 functions are to be used when the ifname argument is terminated
    by a '\0' character: */
@@ -495,16 +505,16 @@ extern void if_delete_retain(struct interface *);
    deletes it from the interface list and frees the structure. */
 extern void if_delete(struct interface *);
 
-extern int if_is_up(struct interface *);
-extern int if_is_running(struct interface *);
-extern int if_is_operative(struct interface *);
-extern int if_is_no_ptm_operative(struct interface *);
-extern int if_is_loopback(struct interface *);
-extern int if_is_vrf(struct interface *ifp);
-extern bool if_is_loopback_or_vrf(struct interface *ifp);
-extern int if_is_broadcast(struct interface *);
-extern int if_is_pointopoint(struct interface *);
-extern int if_is_multicast(struct interface *);
+extern int if_is_up(const struct interface *ifp);
+extern int if_is_running(const struct interface *ifp);
+extern int if_is_operative(const struct interface *ifp);
+extern int if_is_no_ptm_operative(const struct interface *ifp);
+extern int if_is_loopback(const struct interface *ifp);
+extern int if_is_vrf(const struct interface *ifp);
+extern bool if_is_loopback_or_vrf(const struct interface *ifp);
+extern int if_is_broadcast(const struct interface *ifp);
+extern int if_is_pointopoint(const struct interface *ifp);
+extern int if_is_multicast(const struct interface *ifp);
 struct vrf;
 extern void if_terminate(struct vrf *vrf);
 extern void if_dump_all(void);
@@ -536,6 +546,7 @@ extern struct connected *connected_lookup_prefix_exact(struct interface *,
 extern struct nbr_connected *nbr_connected_new(void);
 extern void nbr_connected_free(struct nbr_connected *);
 struct nbr_connected *nbr_connected_check(struct interface *, struct prefix *);
+struct connected *connected_get_linklocal(struct interface *ifp);
 
 /* link parameters */
 struct if_link_params *if_link_params_get(struct interface *);
@@ -544,5 +555,9 @@ void if_link_params_free(struct interface *);
 /* Northbound. */
 extern void if_cmd_init(void);
 extern const struct frr_yang_module_info frr_interface_info;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _ZEBRA_IF_H */

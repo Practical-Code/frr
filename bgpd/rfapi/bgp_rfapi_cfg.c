@@ -1217,8 +1217,6 @@ DEFUN (vnc_nve_group_redist_bgpdirect_no_prefixlist,
 
 	if (rfg->plist_redist_name[ZEBRA_ROUTE_BGP_DIRECT][afi])
 		free(rfg->plist_redist_name[ZEBRA_ROUTE_BGP_DIRECT][afi]);
-	route_map_counter_decrement(
-		rfg->plist_redist[ZEBRA_ROUTE_BGP_DIRECT][afi]);
 	rfg->plist_redist_name[ZEBRA_ROUTE_BGP_DIRECT][afi] = NULL;
 	rfg->plist_redist[ZEBRA_ROUTE_BGP_DIRECT][afi] = NULL;
 
@@ -2209,24 +2207,6 @@ void vnc_routemap_update(struct bgp *bgp, const char *unused)
 
 	vnc_zlog_debug_verbose("%s done", __func__);
 }
-
-#if 0 /* superseded */
-static void vnc_routemap_event(route_map_event_t type, /* ignored */
-			       const char *rmap_name)  /* ignored */
-{
-	struct listnode *mnode, *mnnode;
-	struct bgp *bgp;
-
-	vnc_zlog_debug_verbose("%s(event type=%d)", __func__, type);
-	if (bm->bgp == NULL) /* may be called during cleanup */
-		return;
-
-	for (ALL_LIST_ELEMENTS(bm->bgp, mnode, mnnode, bgp))
-		vnc_routemap_update(bgp, rmap_name);
-
-	vnc_zlog_debug_verbose("%s: done", __func__);
-}
-#endif
 
 /*-------------------------------------------------------------------------
  *			nve-group
@@ -3459,8 +3439,7 @@ static void bgp_rfapi_delete_l2_group(struct vty *vty, /* NULL = no output */
 		ecommunity_free(&rfg->rt_export_list);
 	if (rfg->labels)
 		list_delete(&rfg->labels);
-	if (rfg->rfp_cfg)
-		XFREE(MTYPE_RFAPI_RFP_GROUP_CFG, rfg->rfp_cfg);
+	XFREE(MTYPE_RFAPI_RFP_GROUP_CFG, rfg->rfp_cfg);
 	listnode_delete(bgp->rfapi_cfg->l2_groups, rfg);
 
 	rfapi_l2_group_del(rfg);
@@ -3702,10 +3681,6 @@ bgp_rfapi_get_ecommunity_by_lni_label(struct bgp *bgp, uint32_t is_import,
 
 void bgp_rfapi_cfg_init(void)
 {
-	/* main bgpd code does not use this hook, but vnc does */
-	/* superseded by bgp_route_map_process_update_cb() */
-	/* bgp_route_map_event_hook_add(vnc_routemap_event); */
-
 	install_node(&bgp_vnc_defaults_node, NULL);
 	install_node(&bgp_vnc_nve_group_node, NULL);
 	install_node(&bgp_vrf_policy_node, NULL);
@@ -3817,8 +3792,7 @@ struct rfapi_cfg *bgp_rfapi_cfg_new(struct rfapi_rfp_cfg *cfg)
 	struct rfapi_cfg *h;
 	afi_t afi;
 
-	h = (struct rfapi_cfg *)XCALLOC(MTYPE_RFAPI_CFG,
-					sizeof(struct rfapi_cfg));
+	h = XCALLOC(MTYPE_RFAPI_CFG, sizeof(struct rfapi_cfg));
 	assert(h);
 
 	h->nve_groups_sequential = list_new();
@@ -3880,8 +3854,7 @@ void bgp_rfapi_cfg_destroy(struct bgp *bgp, struct rfapi_cfg *h)
 		ecommunity_free(&h->default_rt_export_list);
 	if (h->default_rt_import_list)
 		ecommunity_free(&h->default_rt_import_list);
-	if (h->default_rfp_cfg)
-		XFREE(MTYPE_RFAPI_RFP_GROUP_CFG, h->default_rfp_cfg);
+	XFREE(MTYPE_RFAPI_RFP_GROUP_CFG, h->default_rfp_cfg);
 	for (afi = AFI_IP; afi < AFI_MAX; afi++) {
 		agg_table_finish(h->nve_groups_vn[afi]);
 		agg_table_finish(h->nve_groups_un[afi]);

@@ -3,10 +3,11 @@
 #
 lib_LTLIBRARIES += lib/libfrr.la
 lib_libfrr_la_LDFLAGS = -version-info 0:0:0 -Xlinker -e_libfrr_version
-lib_libfrr_la_LIBADD = $(LIBCAP) $(UNWIND_LIBS) $(LIBYANG_LIBS)
+lib_libfrr_la_LIBADD = $(LIBCAP) $(UNWIND_LIBS) $(LIBYANG_LIBS) $(LUA_LIB)
 
 lib_libfrr_la_SOURCES = \
 	lib/agg_table.c \
+	lib/atomlist.c \
 	lib/bfd.c \
 	lib/buffer.c \
 	lib/checksum.c \
@@ -18,9 +19,9 @@ lib_libfrr_la_SOURCES = \
 	lib/csv.c \
 	lib/debug.c \
 	lib/distribute.c \
-	lib/event_counter.c \
 	lib/ferr.c \
 	lib/filter.c \
+	lib/frrlua.c \
 	lib/frr_pthread.c \
 	lib/frrstr.c \
 	lib/getopt.c \
@@ -66,6 +67,7 @@ lib_libfrr_la_SOURCES = \
 	lib/ringbuf.c \
 	lib/routemap.c \
 	lib/sbuf.c \
+	lib/seqlock.c \
 	lib/sha256.c \
 	lib/sigevent.c \
 	lib/skiplist.c \
@@ -80,6 +82,8 @@ lib_libfrr_la_SOURCES = \
 	lib/table.c \
 	lib/termtable.c \
 	lib/thread.c \
+	lib/typerb.c \
+	lib/typesafe.c \
 	lib/vector.c \
 	lib/vrf.c \
 	lib/vty.c \
@@ -90,7 +94,6 @@ lib_libfrr_la_SOURCES = \
 	lib/yang_wrappers.c \
 	lib/zclient.c \
 	lib/logicalrouter.c \
-	lib/lua.c \
 	# end
 
 nodist_lib_libfrr_la_SOURCES = \
@@ -131,6 +134,7 @@ lib/northbound_cli.lo: lib/northbound_cli_clippy.c
 
 pkginclude_HEADERS += \
 	lib/agg_table.h \
+	lib/atomlist.h \
 	lib/bfd.h \
 	lib/bitfield.h \
 	lib/buffer.h \
@@ -144,11 +148,10 @@ pkginclude_HEADERS += \
 	lib/db.h \
 	lib/debug.h \
 	lib/distribute.h \
-	lib/event_counter.h \
 	lib/ferr.h \
-	lib/fifo.h \
 	lib/filter.h \
 	lib/freebsd-queue.h \
+	lib/frrlua.h \
 	lib/frr_pthread.h \
 	lib/frratomic.h \
 	lib/frrstr.h \
@@ -195,6 +198,7 @@ pkginclude_HEADERS += \
 	lib/ringbuf.h \
 	lib/routemap.h \
 	lib/sbuf.h \
+	lib/seqlock.h \
 	lib/sha256.h \
 	lib/sigevent.h \
 	lib/skiplist.h \
@@ -208,6 +212,8 @@ pkginclude_HEADERS += \
 	lib/table.h \
 	lib/termtable.h \
 	lib/thread.h \
+	lib/typerb.h \
+	lib/typesafe.h \
 	lib/vector.h \
 	lib/vlan.h \
 	lib/vrf.h \
@@ -223,7 +229,6 @@ pkginclude_HEADERS += \
 	lib/zclient.h \
 	lib/zebra.h \
 	lib/logicalrouter.h \
-	lib/lua.h \
 	lib/pbr.h \
 	# end
 
@@ -305,6 +310,18 @@ lib_sysrepo_la_LIBADD = lib/libfrr.la $(SYSREPO_LIBS)
 lib_sysrepo_la_SOURCES = lib/northbound_sysrepo.c
 
 #
+# gRPC northbound plugin
+#
+if GRPC
+module_LTLIBRARIES += lib/grpc.la
+endif
+
+lib_grpc_la_CXXFLAGS = $(WERROR) $(GRPC_CFLAGS)
+lib_grpc_la_LDFLAGS = -avoid-version -module -shared -export-dynamic
+lib_grpc_la_LIBADD = lib/libfrr.la grpc/libfrrgrpc_pb.la $(GRPC_LIBS)
+lib_grpc_la_SOURCES = lib/northbound_grpc.cpp
+
+#
 # CLI utilities
 #
 noinst_PROGRAMS += \
@@ -348,7 +365,7 @@ am__v_CLIPPY_1 =
 
 CLIPPY_DEPS = $(HOSTTOOLS)lib/clippy $(top_srcdir)/python/clidef.py
 
-SUFFIXES = _clippy.c .proto .pb-c.c .pb-c.h .pb.h
+SUFFIXES = _clippy.c .proto .pb-c.c .pb-c.h .pb.h .pb.cc .grpc.pb.cc
 .c_clippy.c:
 	@{ test -x $(top_builddir)/$(HOSTTOOLS)lib/clippy || \
 		$(MAKE) -C $(top_builddir)/$(HOSTTOOLS) lib/clippy; }

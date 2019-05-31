@@ -149,8 +149,8 @@ static void zserv_event(struct zserv *client, enum zserv_event event);
  * hdr (optional)
  *    The message header
  */
-static void zserv_log_message(const char *errmsg, struct stream *msg,
-			      struct zmsghdr *hdr)
+void zserv_log_message(const char *errmsg, struct stream *msg,
+		       struct zmsghdr *hdr)
 {
 	zlog_debug("Rx'd ZAPI message");
 	if (errmsg)
@@ -405,12 +405,11 @@ static int zserv_read(struct thread *thread)
 		}
 
 		/* Debug packet information. */
-		if (IS_ZEBRA_DEBUG_EVENT)
-			zlog_debug("zebra message comes from socket [%d]",
+		if (IS_ZEBRA_DEBUG_PACKET)
+			zlog_debug("zebra message[%s:%u:%u] comes from socket [%d]",
+				   zserv_command_string(hdr.command),
+				   hdr.vrf_id, hdr.length,
 				   sock);
-
-		if (IS_ZEBRA_DEBUG_PACKET && IS_ZEBRA_DEBUG_RECV)
-			zserv_log_message(NULL, client->ibuf_work, &hdr);
 
 		stream_set_getp(client->ibuf_work, 0);
 		struct stream *msg = stream_dup(client->ibuf_work);
@@ -442,7 +441,8 @@ static int zserv_read(struct thread *thread)
 	}
 
 	if (IS_ZEBRA_DEBUG_PACKET)
-		zlog_debug("Read %d packets", p2p_orig - p2p);
+		zlog_debug("Read %d packets from client: %s", p2p_orig - p2p,
+			   zebra_route_string(client->proto));
 
 	/* Reschedule ourselves */
 	zserv_client_event(client, ZSERV_CLIENT_READ);
@@ -697,9 +697,6 @@ static struct zserv *zserv_client_create(int sock)
 	pthread_mutex_init(&client->obuf_mtx, NULL);
 	client->wb = buffer_new(0);
 
-	/* Set table number. */
-	client->rtm_table = zrouter.rtm_table_default;
-
 	atomic_store_explicit(&client->connect_time, (uint32_t) monotime(NULL),
 			      memory_order_relaxed);
 
@@ -770,6 +767,18 @@ static int zserv_accept(struct thread *thread)
 	return 0;
 }
 
+void zserv_close(void)
+{
+	/*
+	 * On shutdown, let's close the socket down
+	 * so that long running processes of killing the
+	 * routing table doesn't leave us in a bad
+	 * state where a client tries to reconnect
+	 */
+	close(zsock);
+	zsock = -1;
+}
+
 void zserv_start(char *path)
 {
 	int ret;
@@ -801,10 +810,8 @@ void zserv_start(char *path)
 			unlink(suna->sun_path);
 	}
 
-	frr_elevate_privs(&zserv_privs) {
-		setsockopt_so_recvbuf(zsock, 1048576);
-		setsockopt_so_sendbuf(zsock, 1048576);
-	}
+	setsockopt_so_recvbuf(zsock, 1048576);
+	setsockopt_so_sendbuf(zsock, 1048576);
 
 	frr_elevate_privs((sa.ss_family != AF_UNIX) ? &zserv_privs : NULL) {
 		ret = bind(zsock, (struct sockaddr *)&sa, sa_len);
@@ -897,7 +904,6 @@ static void zebra_show_client_detail(struct vty *vty, struct zserv *client)
 
 	vty_out(vty, "------------------------ \n");
 	vty_out(vty, "FD: %d \n", client->sock);
-	vty_out(vty, "Route Table ID: %d \n", client->rtm_table);
 
 	connect_time = (time_t) atomic_load_explicit(&client->connect_time,
 						     memory_order_relaxed);
@@ -957,6 +963,8 @@ static void zebra_show_client_detail(struct vty *vty, struct zserv *client)
 		client->v4_nh_watch_add_cnt, 0, client->v4_nh_watch_rem_cnt);
 	vty_out(vty, "NHT v6      %-12d%-12d%-12d\n",
 		client->v6_nh_watch_add_cnt, 0, client->v6_nh_watch_rem_cnt);
+	vty_out(vty, "VxLAN SG    %-12d%-12d%-12d\n", client->vxlan_sg_add_cnt,
+		0, client->vxlan_sg_del_cnt);
 	vty_out(vty, "Interface Up Notifications: %d\n", client->ifup_cnt);
 	vty_out(vty, "Interface Down Notifications: %d\n", client->ifdown_cnt);
 	vty_out(vty, "VNI add notifications: %d\n", client->vniadd_cnt);

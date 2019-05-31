@@ -47,6 +47,8 @@ static void zebra_vrf_table_create(struct zebra_vrf *zvrf, afi_t afi,
 static void zebra_rnhtable_node_cleanup(struct route_table *table,
 					struct route_node *node);
 
+DEFINE_MTYPE_STATIC(ZEBRA, OTHER_TABLE, "Other Table");
+
 /* VRF information update. */
 static void zebra_vrf_add_update(struct zebra_vrf *zvrf)
 {
@@ -93,6 +95,9 @@ static int zebra_vrf_new(struct vrf *vrf)
 	zvrf = zebra_vrf_alloc();
 	vrf->info = zvrf;
 	zvrf->vrf = vrf;
+
+	otable_init(&zvrf->other_tables);
+
 	router_id_init(zvrf);
 	return 0;
 }
@@ -167,6 +172,11 @@ static int zebra_vrf_disable(struct vrf *vrf)
 
 	/* Remove all routes. */
 	for (afi = AFI_IP; afi <= AFI_IP6; afi++) {
+		route_table_finish(zvrf->rnh_table[afi]);
+		zvrf->rnh_table[afi] = NULL;
+		route_table_finish(zvrf->import_check_table[afi]);
+		zvrf->import_check_table[afi] = NULL;
+
 		for (safi = SAFI_UNICAST; safi <= SAFI_MULTICAST; safi++)
 			rib_close_table(zvrf->table[afi][safi]);
 	}
@@ -208,13 +218,11 @@ static int zebra_vrf_disable(struct vrf *vrf)
 		 * table, see rib_close_table above
 		 * we no-longer need this pointer.
 		 */
-		for (safi = SAFI_UNICAST; safi <= SAFI_MULTICAST; safi++)
+		for (safi = SAFI_UNICAST; safi <= SAFI_MULTICAST; safi++) {
+			zebra_router_release_table(zvrf, zvrf->table_id, afi,
+						   safi);
 			zvrf->table[afi][safi] = NULL;
-
-		route_table_finish(zvrf->rnh_table[afi]);
-		zvrf->rnh_table[afi] = NULL;
-		route_table_finish(zvrf->import_check_table[afi]);
-		zvrf->import_check_table[afi] = NULL;
+		}
 	}
 
 	return 0;
@@ -223,6 +231,7 @@ static int zebra_vrf_disable(struct vrf *vrf)
 static int zebra_vrf_delete(struct vrf *vrf)
 {
 	struct zebra_vrf *zvrf = vrf->info;
+	struct other_route_table *otable;
 	struct route_table *table;
 	afi_t afi;
 	safi_t safi;
@@ -256,19 +265,28 @@ static int zebra_vrf_delete(struct vrf *vrf)
 
 	/* release allocated memory */
 	for (afi = AFI_IP; afi <= AFI_IP6; afi++) {
-		void *table_info;
-
 		for (safi = SAFI_UNICAST; safi <= SAFI_MULTICAST; safi++) {
 			table = zvrf->table[afi][safi];
 			if (table) {
-				table_info = route_table_get_info(table);
-				route_table_finish(table);
-				XFREE(MTYPE_RIB_TABLE_INFO, table_info);
+				zebra_router_release_table(zvrf, zvrf->table_id,
+							   afi, safi);
+				zvrf->table[afi][safi] = NULL;
 			}
 		}
 
-		route_table_finish(zvrf->rnh_table[afi]);
-		route_table_finish(zvrf->import_check_table[afi]);
+		if (zvrf->rnh_table[afi])
+			route_table_finish(zvrf->rnh_table[afi]);
+		if (zvrf->import_check_table[afi])
+			route_table_finish(zvrf->import_check_table[afi]);
+	}
+
+	otable = otable_pop(&zvrf->other_tables);
+	while (otable) {
+		zebra_router_release_table(zvrf, otable->table_id,
+					   otable->afi, otable->safi);
+		XFREE(MTYPE_OTHER_TABLE, otable);
+
+		otable = otable_pop(&zvrf->other_tables);
 	}
 
 	/* Cleanup EVPN states for vrf */
@@ -276,6 +294,8 @@ static int zebra_vrf_delete(struct vrf *vrf)
 
 	list_delete_all_node(zvrf->rid_all_sorted_list);
 	list_delete_all_node(zvrf->rid_lo_sorted_list);
+
+	otable_fini(&zvrf->other_tables);
 	XFREE(MTYPE_ZEBRA_VRF, zvrf);
 	vrf->info = NULL;
 
@@ -317,27 +337,34 @@ struct route_table *zebra_vrf_table_with_table_id(afi_t afi, safi_t safi,
 						  vrf_id_t vrf_id,
 						  uint32_t table_id)
 {
-	struct route_table *table = NULL;
+	struct zebra_vrf *zvrf = vrf_info_lookup(vrf_id);
+	struct other_route_table ort, *otable;
+	struct route_table *table;
+
+	if (!zvrf)
+		return NULL;
 
 	if (afi >= AFI_MAX || safi >= SAFI_MAX)
 		return NULL;
 
-	if (vrf_id == VRF_DEFAULT) {
-		if (table_id == RT_TABLE_MAIN
-		    || table_id == zrouter.rtm_table_default)
-			table = zebra_vrf_table(afi, safi, vrf_id);
-		else
-			table = zebra_vrf_other_route_table(afi, table_id,
-							    vrf_id);
-	} else if (vrf_is_backend_netns()) {
-		if (table_id == RT_TABLE_MAIN
-		    || table_id == zrouter.rtm_table_default)
-			table = zebra_vrf_table(afi, safi, vrf_id);
-		else
-			table = zebra_vrf_other_route_table(afi, table_id,
-							    vrf_id);
-	} else
-		table = zebra_vrf_table(afi, safi, vrf_id);
+	if (table_id == zvrf->table_id)
+		return zebra_vrf_table(afi, safi, vrf_id);
+
+	ort.afi = afi;
+	ort.safi = safi;
+	ort.table_id = table_id;
+	otable = otable_find(&zvrf->other_tables, &ort);
+	if (otable)
+		return otable->table;
+
+	table = zebra_router_get_table(zvrf, table_id, afi, safi);
+
+	otable = XCALLOC(MTYPE_OTHER_TABLE, sizeof(*otable));
+	otable->afi = afi;
+	otable->safi = safi;
+	otable->table_id = table_id;
+	otable->table = table;
+	otable_add(&zvrf->other_tables, otable);
 
 	return table;
 }
@@ -351,8 +378,12 @@ void zebra_rtable_node_cleanup(struct route_table *table,
 		rib_unlink(node, re);
 	}
 
-	if (node->info)
+	if (node->info) {
+		rib_dest_t *dest = node->info;
+
+		rnh_list_fini(&dest->nht);
 		XFREE(MTYPE_RIB_DEST, node->info);
+	}
 }
 
 static void zebra_rnhtable_node_cleanup(struct route_table *table,
@@ -368,10 +399,19 @@ static void zebra_rnhtable_node_cleanup(struct route_table *table,
 static void zebra_vrf_table_create(struct zebra_vrf *zvrf, afi_t afi,
 				   safi_t safi)
 {
+	struct route_node *rn;
+	struct prefix p;
+
 	assert(!zvrf->table[afi][safi]);
 
 	zvrf->table[afi][safi] =
 		zebra_router_get_table(zvrf, zvrf->table_id, afi, safi);
+
+	memset(&p, 0, sizeof(p));
+	p.family = afi2family(afi);
+
+	rn = srcdest_rnode_get(zvrf->table[afi][safi], &p, NULL);
+	zebra_rib_create_dest(rn);
 }
 
 /* Allocate new zebra VRF. */
@@ -422,34 +462,6 @@ struct route_table *zebra_vrf_table(afi_t afi, safi_t safi, vrf_id_t vrf_id)
 		return NULL;
 
 	return zvrf->table[afi][safi];
-}
-
-struct route_table *zebra_vrf_other_route_table(afi_t afi, uint32_t table_id,
-						vrf_id_t vrf_id)
-{
-	struct zebra_vrf *zvrf;
-
-	zvrf = vrf_info_lookup(vrf_id);
-	if (!zvrf)
-		return NULL;
-
-	if (afi >= AFI_MAX)
-		return NULL;
-
-	if ((table_id != RT_TABLE_MAIN)
-	    && (table_id != zrouter.rtm_table_default)) {
-		if (zvrf->table_id == RT_TABLE_MAIN ||
-		    zvrf->table_id == zrouter.rtm_table_default) {
-			/* this VRF use default table
-			 * so in all cases, it does not use specific table
-			 * so it is possible to configure tables in this VRF
-			 */
-			return zebra_router_get_table(zvrf, table_id, afi,
-						      SAFI_UNICAST);
-		}
-	}
-
-	return zvrf->table[afi][SAFI_UNICAST];
 }
 
 static int vrf_config_write(struct vty *vty)

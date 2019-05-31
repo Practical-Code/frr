@@ -47,6 +47,7 @@
 #include "pim_nht.h"
 #include "pim_jp_agg.h"
 #include "pim_igmp_join.h"
+#include "pim_vxlan.h"
 
 static void pim_if_igmp_join_del_all(struct interface *ifp);
 static int igmp_join_sock(const char *ifname, ifindex_t ifindex,
@@ -109,7 +110,7 @@ static int pim_sec_addr_comp(const void *p1, const void *p2)
 }
 
 struct pim_interface *pim_if_new(struct interface *ifp, bool igmp, bool pim,
-				 bool ispimreg)
+				 bool ispimreg, bool is_vxlan_term)
 {
 	struct pim_interface *pim_ifp;
 
@@ -130,6 +131,12 @@ struct pim_interface *pim_if_new(struct interface *ifp, bool igmp, bool pim,
 		IGMP_QUERY_MAX_RESPONSE_TIME_DSEC;
 	pim_ifp->igmp_specific_query_max_response_time_dsec =
 		IGMP_SPECIFIC_QUERY_MAX_RESPONSE_TIME_DSEC;
+	pim_ifp->igmp_last_member_query_count =
+		IGMP_DEFAULT_ROBUSTNESS_VARIABLE;
+
+	/* BSM config on interface: TRUE by default */
+	pim_ifp->bsm_enable = true;
+	pim_ifp->ucast_bsm_accept = true;
 
 	/*
 	  RFC 3376: 8.3. Query Response Interval
@@ -178,7 +185,7 @@ struct pim_interface *pim_if_new(struct interface *ifp, bool igmp, bool pim,
 
 	pim_sock_reset(ifp);
 
-	pim_if_add_vif(ifp, ispimreg);
+	pim_if_add_vif(ifp, ispimreg, is_vxlan_term);
 
 	return pim_ifp;
 }
@@ -208,8 +215,7 @@ void pim_if_delete(struct interface *ifp)
 	list_delete(&pim_ifp->upstream_switch_list);
 	list_delete(&pim_ifp->sec_addr_list);
 
-	if (pim_ifp->boundary_oil_plist)
-		XFREE(MTYPE_PIM_INTERFACE, pim_ifp->boundary_oil_plist);
+	XFREE(MTYPE_PIM_INTERFACE, pim_ifp->boundary_oil_plist);
 
 	while (!RB_EMPTY(pim_ifchannel_rb, &pim_ifp->ifchannel_rb)) {
 		ch = RB_ROOT(pim_ifchannel_rb, &pim_ifp->ifchannel_rb);
@@ -629,7 +635,7 @@ void pim_if_addr_add(struct connected *ifc)
 	  address assigned, then try to create a vif_index.
 	*/
 	if (pim_ifp->mroute_vif_index < 0) {
-		pim_if_add_vif(ifp, false);
+		pim_if_add_vif(ifp, false, false /*vxlan_term*/);
 	}
 	pim_ifchannel_scan_forward_start(ifp);
 }
@@ -762,7 +768,7 @@ void pim_if_addr_add_all(struct interface *ifp)
 	 * address assigned, then try to create a vif_index.
 	 */
 	if (pim_ifp->mroute_vif_index < 0) {
-		pim_if_add_vif(ifp, false);
+		pim_if_add_vif(ifp, false, false /*vxlan_term*/);
 	}
 	pim_ifchannel_scan_forward_start(ifp);
 
@@ -927,7 +933,7 @@ static int pim_iface_next_vif_index(struct interface *ifp)
 
   see also pim_if_find_vifindex_by_ifindex()
  */
-int pim_if_add_vif(struct interface *ifp, bool ispimreg)
+int pim_if_add_vif(struct interface *ifp, bool ispimreg, bool is_vxlan_term)
 {
 	struct pim_interface *pim_ifp = ifp->info;
 	struct in_addr ifaddr;
@@ -949,7 +955,7 @@ int pim_if_add_vif(struct interface *ifp, bool ispimreg)
 	}
 
 	ifaddr = pim_ifp->primary_address;
-	if (!ispimreg && PIM_INADDR_IS_ANY(ifaddr)) {
+	if (!ispimreg && !is_vxlan_term && PIM_INADDR_IS_ANY(ifaddr)) {
 		zlog_warn(
 			"%s: could not get address for interface %s ifindex=%d",
 			__PRETTY_FUNCTION__, ifp->name, ifp->ifindex);
@@ -978,6 +984,10 @@ int pim_if_add_vif(struct interface *ifp, bool ispimreg)
 	}
 
 	pim_ifp->pim->iface_vif_index[pim_ifp->mroute_vif_index] = 1;
+
+	/* if the device qualifies as pim_vxlan iif/oif update vxlan entries */
+	pim_vxlan_add_vif(ifp);
+
 	return 0;
 }
 
@@ -991,6 +1001,9 @@ int pim_if_del_vif(struct interface *ifp)
 			  ifp->name, ifp->ifindex);
 		return -1;
 	}
+
+	/* if the device was a pim_vxlan iif/oif update vxlan mroute entries */
+	pim_vxlan_del_vif(ifp);
 
 	pim_mroute_del_vif(ifp);
 
@@ -1470,7 +1483,8 @@ void pim_if_create_pimreg(struct pim_instance *pim)
 		pim->regiface = if_create(pimreg_name, pim->vrf_id);
 		pim->regiface->ifindex = PIM_OIF_PIM_REGISTER_VIF;
 
-		pim_if_new(pim->regiface, false, false, true);
+		pim_if_new(pim->regiface, false, false, true,
+			false /*vxlan_term*/);
 	}
 }
 

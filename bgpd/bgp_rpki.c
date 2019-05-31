@@ -125,12 +125,14 @@ static struct rtr_socket *create_rtr_socket(struct tr_socket *tr_socket);
 static struct cache *find_cache(const uint8_t preference);
 static int add_tcp_cache(const char *host, const char *port,
 			 const uint8_t preference);
-static void print_record(const struct pfx_record *record, void *data);
+static void print_record(const struct pfx_record *record, struct vty *vty);
 static int is_synchronized(void);
 static int is_running(void);
 static void route_match_free(void *rule);
-static route_map_result_t route_match(void *rule, const struct prefix *prefix,
-				      route_map_object_t type, void *object);
+static enum route_map_match_result_t route_match(void *rule,
+						 const struct prefix *prefix,
+						 route_map_object_t type,
+						 void *object);
 static void *route_match_compile(const char *arg);
 static void revalidate_bgp_node(struct bgp_node *bgp_node, afi_t afi,
 				safi_t safi);
@@ -213,8 +215,10 @@ static void ipv6_addr_to_host_byte_order(const uint32_t *src, uint32_t *dest)
 		dest[i] = ntohl(src[i]);
 }
 
-static route_map_result_t route_match(void *rule, const struct prefix *prefix,
-				      route_map_object_t type, void *object)
+static enum route_map_match_result_t route_match(void *rule,
+						 const struct prefix *prefix,
+						 route_map_object_t type,
+						 void *object)
 {
 	int *rpki_status = rule;
 	struct bgp_path_info *path;
@@ -271,17 +275,23 @@ static struct cache *find_cache(const uint8_t preference)
 	return NULL;
 }
 
-static void print_record(const struct pfx_record *record, void *data)
+static void print_record(const struct pfx_record *record, struct vty *vty)
 {
 	char ip[INET6_ADDRSTRLEN];
+
+	lrtr_ip_addr_to_str(&record->prefix, ip, sizeof(ip));
+	vty_out(vty, "%-40s   %3u - %3u   %10u\n", ip, record->min_len,
+		record->max_len, record->asn);
+}
+
+static void print_record_cb(const struct pfx_record *record, void *data)
+{
 	struct rpki_for_each_record_arg *arg = data;
 	struct vty *vty = arg->vty;
 
 	(*arg->prefix_amount)++;
 
-	lrtr_ip_addr_to_str(&record->prefix, ip, sizeof(ip));
-	vty_out(vty, "%-40s   %3u - %3u   %10u\n", ip, record->min_len,
-		record->max_len, record->asn);
+	print_record(record, vty);
 }
 
 static struct rtr_mgr_group *get_groups(void)
@@ -663,10 +673,10 @@ static void print_prefix_table(struct vty *vty)
 	vty_out(vty, "%-40s %s  %s\n", "Prefix", "Prefix Length", "Origin-AS");
 
 	arg.prefix_amount = &number_of_ipv4_prefixes;
-	pfx_table_for_each_ipv4_record(pfx_table, print_record, &arg);
+	pfx_table_for_each_ipv4_record(pfx_table, print_record_cb, &arg);
 
 	arg.prefix_amount = &number_of_ipv6_prefixes;
-	pfx_table_for_each_ipv6_record(pfx_table, print_record, &arg);
+	pfx_table_for_each_ipv6_record(pfx_table, print_record_cb, &arg);
 
 	vty_out(vty, "Number of IPv4 Prefixes: %u\n", number_of_ipv4_prefixes);
 	vty_out(vty, "Number of IPv6 Prefixes: %u\n", number_of_ipv6_prefixes);
@@ -731,28 +741,27 @@ static int rpki_validate_prefix(struct peer *peer, struct attr *attr,
 			 prefix->prefixlen, &result);
 
 	// Print Debug output
-	prefix_string =
-		inet_ntop(prefix->family, &prefix->u.prefix, buf, BUFSIZ);
+	prefix_string = prefix2str(prefix, buf, sizeof(buf));
 	switch (result) {
 	case BGP_PFXV_STATE_VALID:
 		RPKI_DEBUG(
-			"Validating Prefix %s/%hhu from asn %u    Result: VALID",
-			prefix_string, prefix->prefixlen, as_number);
+			"Validating Prefix %s from asn %u    Result: VALID",
+			prefix_string, as_number);
 		return RPKI_VALID;
 	case BGP_PFXV_STATE_NOT_FOUND:
 		RPKI_DEBUG(
-			"Validating Prefix %s/%hhu from asn %u    Result: NOT FOUND",
-			prefix_string, prefix->prefixlen, as_number);
+			"Validating Prefix %s from asn %u    Result: NOT FOUND",
+			prefix_string, as_number);
 		return RPKI_NOTFOUND;
 	case BGP_PFXV_STATE_INVALID:
 		RPKI_DEBUG(
-			"Validating Prefix %s/%hhu from asn %u    Result: INVALID",
-			prefix_string, prefix->prefixlen, as_number);
+			"Validating Prefix %s from asn %u    Result: INVALID",
+			prefix_string, as_number);
 		return RPKI_INVALID;
 	default:
 		RPKI_DEBUG(
-			"Validating Prefix %s/%hhu from asn %u    Result: CANNOT VALIDATE",
-			prefix_string, prefix->prefixlen, as_number);
+			"Validating Prefix %s from asn %u    Result: CANNOT VALIDATE",
+			prefix_string, as_number);
 		break;
 	}
 	return 0;
@@ -1106,7 +1115,7 @@ DEFPY (rpki_cache,
 		vty_out(vty,
 			"ssh sockets are not supported. "
 			"Please recompile rtrlib and frr with ssh support. "
-			"If you want to use it");
+			"If you want to use it\n");
 #endif
 	} else { // use tcp connection
 		return_value = add_tcp_cache(cache, tcpport, preference);
@@ -1179,6 +1188,58 @@ DEFUN (show_rpki_prefix_table,
 	return CMD_SUCCESS;
 }
 
+DEFPY (show_rpki_prefix,
+       show_rpki_prefix_cmd,
+       "show rpki prefix <A.B.C.D/M|X:X::X:X/M> [(1-4294967295)$asn]",
+       SHOW_STR
+       RPKI_OUTPUT_STRING
+       "Lookup IP prefix and optionally ASN in prefix table\n"
+       "IPv4 prefix\n"
+       "IPv6 prefix\n"
+       "AS Number\n")
+{
+
+	if (!is_synchronized()) {
+		vty_out(vty, "No Conection to RPKI cache server.\n");
+		return CMD_WARNING;
+	}
+
+	struct lrtr_ip_addr addr;
+	char addr_str[INET6_ADDRSTRLEN];
+	size_t addr_len = strchr(prefix_str, '/') - prefix_str;
+
+	memset(addr_str, 0, sizeof(addr_str));
+	memcpy(addr_str, prefix_str, addr_len);
+
+	if (lrtr_ip_str_to_addr(addr_str, &addr) != 0) {
+		vty_out(vty, "Invalid IP prefix\n");
+		return CMD_WARNING;
+	}
+
+	struct pfx_record *matches = NULL;
+	unsigned int match_count = 0;
+	enum pfxv_state result;
+
+	if (pfx_table_validate_r(rtr_config->pfx_table, &matches, &match_count,
+				 asn, &addr, prefix->prefixlen, &result)
+	    != PFX_SUCCESS) {
+		vty_out(vty, "Prefix lookup failed");
+		return CMD_WARNING;
+	}
+
+	vty_out(vty, "%-40s %s  %s\n", "Prefix", "Prefix Length", "Origin-AS");
+	for (size_t i = 0; i < match_count; ++i) {
+		const struct pfx_record *record = &matches[i];
+
+		if (record->max_len >= prefix->prefixlen
+		    && ((asn != 0 && asn == record->asn) || asn == 0)) {
+			print_record(&matches[i], vty);
+		}
+	}
+
+	return CMD_SUCCESS;
+}
+
 DEFUN (show_rpki_cache_server,
        show_rpki_cache_server_cmd,
        "show rpki cache-server",
@@ -1195,6 +1256,7 @@ DEFUN (show_rpki_cache_server,
 				cache->tr_config.tcp_config->host,
 				cache->tr_config.tcp_config->port);
 
+#if defined(FOUND_SSH)
 		} else if (cache->type == SSH) {
 			vty_out(vty,
 				"host: %s port: %d username: %s "
@@ -1206,6 +1268,7 @@ DEFUN (show_rpki_cache_server,
 					->server_hostkey_path,
 				cache->tr_config.ssh_config
 					->client_privkey_path);
+#endif
 		}
 	}
 
@@ -1414,7 +1477,7 @@ static void install_cli_commands(void)
 	install_default(RPKI_NODE);
 	overwrite_exit_commands();
 	install_element(CONFIG_NODE, &rpki_cmd);
-	install_element(VIEW_NODE, &rpki_cmd);
+	install_element(ENABLE_NODE, &rpki_cmd);
 
 	install_element(ENABLE_NODE, &bgp_rpki_start_cmd);
 	install_element(ENABLE_NODE, &bgp_rpki_stop_cmd);
@@ -1447,9 +1510,10 @@ static void install_cli_commands(void)
 	install_element(RPKI_NODE, &no_rpki_cache_cmd);
 
 	/* Install show commands */
-	install_element(ENABLE_NODE, &show_rpki_prefix_table_cmd);
-	install_element(ENABLE_NODE, &show_rpki_cache_connection_cmd);
-	install_element(ENABLE_NODE, &show_rpki_cache_server_cmd);
+	install_element(VIEW_NODE, &show_rpki_prefix_table_cmd);
+	install_element(VIEW_NODE, &show_rpki_cache_connection_cmd);
+	install_element(VIEW_NODE, &show_rpki_cache_server_cmd);
+	install_element(VIEW_NODE, &show_rpki_prefix_cmd);
 
 	/* Install debug commands */
 	install_element(CONFIG_NODE, &debug_rpki_cmd);

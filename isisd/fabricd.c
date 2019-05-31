@@ -108,9 +108,9 @@ static void neighbor_lists_clear(struct fabricd *f)
 	hash_clean(f->neighbors_neighbors, neighbor_entry_del_void);
 }
 
-static unsigned neighbor_entry_hash_key(void *np)
+static unsigned neighbor_entry_hash_key(const void *np)
 {
-	struct neighbor_entry *n = np;
+	const struct neighbor_entry *n = np;
 
 	return jhash(n->id, sizeof(n->id), 0x55aa5a5a);
 }
@@ -559,18 +559,18 @@ static void move_to_queue(struct isis_lsp *lsp, struct neighbor_entry *n,
 	listnode_add(lsp->flooding_neighbors[type], neighbor_id);
 }
 
-static void mark_neighbor_as_present(struct hash_backet *backet, void *arg)
+static void mark_neighbor_as_present(struct hash_bucket *bucket, void *arg)
 {
-	struct neighbor_entry *n = backet->data;
+	struct neighbor_entry *n = bucket->data;
 
 	n->present = true;
 }
 
-static void handle_firsthops(struct hash_backet *backet, void *arg)
+static void handle_firsthops(struct hash_bucket *bucket, void *arg)
 {
 	struct isis_lsp *lsp = arg;
 	struct fabricd *f = lsp->area->fabricd;
-	struct isis_vertex *vertex = backet->data;
+	struct isis_vertex *vertex = bucket->data;
 
 	struct neighbor_entry *n;
 

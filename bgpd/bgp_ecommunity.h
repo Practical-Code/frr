@@ -21,6 +21,9 @@
 #ifndef _QUAGGA_BGP_ECOMMUNITY_H
 #define _QUAGGA_BGP_ECOMMUNITY_H
 
+#include "bgpd/bgp_route.h"
+#include "bgpd/bgpd.h"
+
 /* High-order octet of the Extended Communities type field.  */
 #define ECOMMUNITY_ENCODE_AS                0x00
 #define ECOMMUNITY_ENCODE_IP                0x01
@@ -160,7 +163,7 @@ extern struct ecommunity *ecommunity_uniq_sort(struct ecommunity *);
 extern struct ecommunity *ecommunity_intern(struct ecommunity *);
 extern bool ecommunity_cmp(const void *arg1, const void *arg2);
 extern void ecommunity_unintern(struct ecommunity **);
-extern unsigned int ecommunity_hash_make(void *);
+extern unsigned int ecommunity_hash_make(const void *);
 extern struct ecommunity *ecommunity_str2com(const char *, int, int);
 extern char *ecommunity_ecom2str(struct ecommunity *, int, int);
 extern void ecommunity_strfree(char **s);
@@ -183,5 +186,13 @@ extern int ecommunity_del_val(struct ecommunity *ecom,
 struct bgp_pbr_entry_action;
 extern int ecommunity_fill_pbr_action(struct ecommunity_val *ecom_eval,
 			       struct bgp_pbr_entry_action *api);
+
+extern void bgp_compute_aggregate_ecommunity(
+					struct bgp_aggregate *aggregate,
+					struct ecommunity *ecommunity);
+extern void bgp_remove_ecommunity_from_aggregate(
+					struct bgp_aggregate *aggregate,
+					struct ecommunity *ecommunity);
+extern void bgp_aggr_ecommunity_remove(void *arg);
 
 #endif /* _QUAGGA_BGP_ECOMMUNITY_H */

@@ -28,6 +28,7 @@
 /aclocal.m4
 /libtool
 /libtool.orig
+/changelog-auto
 
 /Makefile
 /Makefile.in
@@ -48,6 +49,7 @@
 *.pb.h
 *.pb-c.h
 *.pb-c.c
+*.pb.cc
 *_clippy.c
 
 ### dist
@@ -74,6 +76,7 @@ build
 *.bak
 *.swp
 *.pyc
+*.dmp
 __pycache__
 *.patch
 *.diff
@@ -85,5 +88,7 @@ GSYMS
 GRTAGS
 GPATH
 compile_commands.json
+.ccls-cache
 .dirstamp
 refix
+.vscode

@@ -47,6 +47,7 @@
 #include "zebra/irdp.h"
 #include "zebra/zebra_ptm.h"
 #include "zebra/rt_netlink.h"
+#include "zebra/if_netlink.h"
 #include "zebra/interface.h"
 #include "zebra/zebra_vxlan.h"
 #include "zebra/zebra_errors.h"
@@ -135,6 +136,8 @@ static int if_zebra_new_hook(struct interface *ifp)
 		rtadv->DefaultPreference = RTADV_PREF_MEDIUM;
 
 		rtadv->AdvPrefixList = list_new();
+		rtadv->AdvRDNSSList = list_new();
+		rtadv->AdvDNSSLList = list_new();
 	}
 #endif /* HAVE_RTADV */
 
@@ -175,8 +178,11 @@ static int if_zebra_delete_hook(struct interface *ifp)
 
 		rtadv = &zebra_if->rtadv;
 		list_delete(&rtadv->AdvPrefixList);
+		list_delete(&rtadv->AdvRDNSSList);
+		list_delete(&rtadv->AdvDNSSLList);
 #endif /* HAVE_RTADV */
 
+		XFREE(MTYPE_TMP, zebra_if->desc);
 		THREAD_OFF(zebra_if->speed_update);
 
 		XFREE(MTYPE_ZINFO, zebra_if);
@@ -437,7 +443,7 @@ static void if_addr_wakeup(struct interface *ifp)
 	struct listnode *node, *nnode;
 	struct connected *ifc;
 	struct prefix *p;
-	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	for (ALL_LIST_ELEMENTS(ifp->connected, node, nnode, ifc)) {
 		p = ifc->address;
@@ -475,12 +481,13 @@ static void if_addr_wakeup(struct interface *ifp)
 					if_refresh(ifp);
 				}
 
-				ret = if_set_prefix(ifp, ifc);
-				if (ret < 0) {
+				dplane_res = dplane_intf_addr_set(ifp, ifc);
+				if (dplane_res ==
+				    ZEBRA_DPLANE_REQUEST_FAILURE) {
 					flog_err_sys(
 						EC_ZEBRA_IFACE_ADDR_ADD_FAILED,
 						"Can't set interface's address: %s",
-						safe_strerror(errno));
+						dplane_res2str(dplane_res));
 					continue;
 				}
 
@@ -498,12 +505,14 @@ static void if_addr_wakeup(struct interface *ifp)
 					if_refresh(ifp);
 				}
 
-				ret = if_prefix_add_ipv6(ifp, ifc);
-				if (ret < 0) {
+
+				dplane_res = dplane_intf_addr_set(ifp, ifc);
+				if (dplane_res ==
+				    ZEBRA_DPLANE_REQUEST_FAILURE) {
 					flog_err_sys(
 						EC_ZEBRA_IFACE_ADDR_ADD_FAILED,
 						"Can't set interface's address: %s",
-						safe_strerror(errno));
+						dplane_res2str(dplane_res));
 					continue;
 				}
 
@@ -1055,7 +1064,14 @@ void zebra_if_update_all_links(void)
 	}
 }
 
-
+void zebra_if_set_protodown(struct interface *ifp, bool down)
+{
+#ifdef HAVE_NETLINK
+	netlink_protodown(ifp, down);
+#else
+	zlog_warn("Protodown is not supported on this platform");
+#endif
+}
 
 /* Output prefix string to vty. */
 static int prefix_vty_out(struct vty *vty, struct prefix *p)
@@ -1296,6 +1312,9 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 
 	if (ifp->desc)
 		vty_out(vty, "  Description: %s\n", ifp->desc);
+	if (zebra_if->desc)
+		vty_out(vty, "  OS Description: %s\n", zebra_if->desc);
+
 	if (ifp->ifindex == IFINDEX_INTERNAL) {
 		vty_out(vty, "  pseudo interface\n");
 		return;
@@ -1365,8 +1384,11 @@ static void if_dump_vty(struct vty *vty, struct interface *ifp)
 			vty_out(vty, " VTEP IP: %s",
 				inet_ntoa(vxlan_info->vtep_ip));
 		if (vxlan_info->access_vlan)
-			vty_out(vty, " Access VLAN Id %u",
+			vty_out(vty, " Access VLAN Id %u\n",
 				vxlan_info->access_vlan);
+		if (vxlan_info->mcast_grp.s_addr != INADDR_ANY)
+			vty_out(vty, "  Mcast Group %s",
+					inet_ntoa(vxlan_info->mcast_grp));
 		vty_out(vty, "\n");
 	}
 
@@ -1686,6 +1708,10 @@ static void if_show_description(struct vty *vty, vrf_id_t vrf_id)
 	vty_out(vty, "Interface       Status  Protocol  Description\n");
 	FOR_ALL_INTERFACES (vrf, ifp) {
 		int len;
+		struct zebra_if *zif;
+		bool intf_desc;
+
+		intf_desc = false;
 
 		len = vty_out(vty, "%s", ifp->name);
 		vty_out(vty, "%*s", (16 - len), " ");
@@ -1705,8 +1731,19 @@ static void if_show_description(struct vty *vty, vrf_id_t vrf_id)
 			vty_out(vty, "down    down      ");
 		}
 
-		if (ifp->desc)
+		if (ifp->desc) {
+			intf_desc = true;
 			vty_out(vty, "%s", ifp->desc);
+		}
+		zif = ifp->info;
+		if (zif && zif->desc) {
+			vty_out(vty, "%s%s",
+				intf_desc
+					? "\n                                  "
+					: "",
+				zif->desc);
+		}
+
 		vty_out(vty, "\n");
 	}
 }
@@ -2622,6 +2659,7 @@ static int ip_address_install(struct vty *vty, struct interface *ifp,
 	struct connected *ifc;
 	struct prefix_ipv4 *p;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	if_data = ifp->info;
 
@@ -2695,10 +2733,10 @@ static int ip_address_install(struct vty *vty, struct interface *ifp,
 			if_refresh(ifp);
 		}
 
-		ret = if_set_prefix(ifp, ifc);
-		if (ret < 0) {
+		dplane_res = dplane_intf_addr_set(ifp, ifc);
+		if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 			vty_out(vty, "%% Can't set interface IP address: %s.\n",
-				safe_strerror(errno));
+				dplane_res2str(dplane_res));
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 
@@ -2719,6 +2757,7 @@ static int ip_address_uninstall(struct vty *vty, struct interface *ifp,
 	struct prefix_ipv4 lp, pp;
 	struct connected *ifc;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	/* Convert to prefix structure. */
 	ret = str2prefix_ipv4(addr_str, &lp);
@@ -2763,10 +2802,10 @@ static int ip_address_uninstall(struct vty *vty, struct interface *ifp,
 	}
 
 	/* This is real route. */
-	ret = if_unset_prefix(ifp, ifc);
-	if (ret < 0) {
+	dplane_res = dplane_intf_addr_unset(ifp, ifc);
+	if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 		vty_out(vty, "%% Can't unset interface IP address: %s.\n",
-			safe_strerror(errno));
+			dplane_res2str(dplane_res));
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 	UNSET_FLAG(ifc->conf, ZEBRA_IFC_QUEUED);
@@ -2873,6 +2912,7 @@ static int ipv6_address_install(struct vty *vty, struct interface *ifp,
 	struct connected *ifc;
 	struct prefix_ipv6 *p;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	if_data = ifp->info;
 
@@ -2919,11 +2959,10 @@ static int ipv6_address_install(struct vty *vty, struct interface *ifp,
 			if_refresh(ifp);
 		}
 
-		ret = if_prefix_add_ipv6(ifp, ifc);
-
-		if (ret < 0) {
+		dplane_res = dplane_intf_addr_set(ifp, ifc);
+		if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 			vty_out(vty, "%% Can't set interface IP address: %s.\n",
-				safe_strerror(errno));
+				dplane_res2str(dplane_res));
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 
@@ -2957,6 +2996,7 @@ static int ipv6_address_uninstall(struct vty *vty, struct interface *ifp,
 	struct prefix_ipv6 cp;
 	struct connected *ifc;
 	int ret;
+	enum zebra_dplane_result dplane_res;
 
 	/* Convert to prefix structure. */
 	ret = str2prefix_ipv6(addr_str, &cp);
@@ -2987,10 +3027,10 @@ static int ipv6_address_uninstall(struct vty *vty, struct interface *ifp,
 	}
 
 	/* This is real route. */
-	ret = if_prefix_delete_ipv6(ifp, ifc);
-	if (ret < 0) {
+	dplane_res = dplane_intf_addr_unset(ifp, ifc);
+	if (dplane_res == ZEBRA_DPLANE_REQUEST_FAILURE) {
 		vty_out(vty, "%% Can't unset interface IP address: %s.\n",
-			safe_strerror(errno));
+			dplane_res2str(dplane_res));
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 

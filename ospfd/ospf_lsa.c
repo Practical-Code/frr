@@ -1499,12 +1499,6 @@ struct in_addr ospf_get_nssa_ip(struct ospf_area *area)
 	return fwd;
 }
 
-#define DEFAULT_DEFAULT_METRIC	             20
-#define DEFAULT_DEFAULT_ORIGINATE_METRIC     10
-#define DEFAULT_DEFAULT_ALWAYS_METRIC	      1
-
-#define DEFAULT_METRIC_TYPE		     EXTERNAL_METRIC_TYPE_2
-
 int metric_type(struct ospf *ospf, uint8_t src, unsigned short instance)
 {
 	struct ospf_redist *red;
@@ -3652,8 +3646,8 @@ void ospf_refresher_unregister_lsa(struct ospf *ospf, struct ospf_lsa *lsa)
 			list_delete(&refresh_list);
 			ospf->lsa_refresh_queue.qs[lsa->refresh_list] = NULL;
 		}
-		ospf_lsa_unlock(&lsa); /* lsa_refresh_queue */
 		lsa->refresh_list = -1;
+		ospf_lsa_unlock(&lsa); /* lsa_refresh_queue */
 	}
 }
 

@@ -34,19 +34,17 @@
 #include "sigevent.h"
 #include "zclient.h"
 #include "vrf.h"
+#include "if_rmap.h"
 #include "libfrr.h"
 
 #include "ripd/ripd.h"
 #include "ripd/rip_errors.h"
 
 /* ripd options. */
-#if CONFDATE > 20190521
-	CPP_NOTICE("-r / --retain has reached deprecation EOL, remove")
-#endif
-static struct option longopts[] = {{"retain", no_argument, NULL, 'r'}, {0}};
+static struct option longopts[] = {{0}};
 
 /* ripd privileges */
-zebra_capabilities_t _caps_p[] = {ZCAP_NET_RAW, ZCAP_BIND};
+zebra_capabilities_t _caps_p[] = {ZCAP_NET_RAW, ZCAP_BIND, ZCAP_SYS_ADMIN};
 
 struct zebra_privs_t ripd_privs = {
 #if defined(FRR_USER)
@@ -59,7 +57,7 @@ struct zebra_privs_t ripd_privs = {
 	.vty_group = VTY_GROUP,
 #endif
 	.caps_p = _caps_p,
-	.cap_num_p = 2,
+	.cap_num_p = array_size(_caps_p),
 	.cap_num_i = 0};
 
 /* Master of threads. */
@@ -81,8 +79,8 @@ static void sigint(void)
 {
 	zlog_notice("Terminating on signal");
 
-	rip_clean();
-
+	rip_vrf_terminate();
+	if_rmap_terminate();
 	rip_zclient_stop();
 	frr_fini();
 
@@ -128,10 +126,7 @@ FRR_DAEMON_INFO(ripd, RIP, .vty_port = RIP_VTY_PORT,
 		.privs = &ripd_privs, .yang_modules = ripd_yang_modules,
 		.n_yang_modules = array_size(ripd_yang_modules), )
 
-#if CONFDATE > 20190521
-CPP_NOTICE("-r / --retain has reached deprecation EOL, remove")
-#endif
-#define DEPRECATED_OPTIONS "r"
+#define DEPRECATED_OPTIONS ""
 
 /* Main routine of ripd. */
 int main(int argc, char **argv)
@@ -171,14 +166,13 @@ int main(int argc, char **argv)
 	/* Library initialization. */
 	rip_error_init();
 	keychain_init();
-	vrf_init(NULL, NULL, NULL, NULL, NULL);
+	rip_vrf_init();
 
 	/* RIP related initialization. */
 	rip_init();
 	rip_if_init();
 	rip_cli_init();
 	rip_zclient_init(master);
-	rip_peer_init();
 
 	frr_config_fork();
 	frr_run(master);

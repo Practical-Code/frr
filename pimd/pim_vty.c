@@ -39,6 +39,8 @@
 #include "pim_msdp.h"
 #include "pim_ssm.h"
 #include "pim_bfd.h"
+#include "pim_bsm.h"
+#include "pim_vxlan.h"
 
 int pim_debug_config_write(struct vty *vty)
 {
@@ -116,6 +118,16 @@ int pim_debug_config_write(struct vty *vty)
 
 	if (PIM_DEBUG_ZEBRA) {
 		vty_out(vty, "debug pim zebra\n");
+		++writes;
+	}
+
+	if (PIM_DEBUG_BSM) {
+		vty_out(vty, "debug pim bsm\n");
+		++writes;
+	}
+
+	if (PIM_DEBUG_VXLAN) {
+		vty_out(vty, "debug pim vxlan\n");
 		++writes;
 	}
 
@@ -234,6 +246,8 @@ int pim_global_config_write_worker(struct pim_instance *pim, struct vty *vty)
 		}
 	}
 
+	pim_vxlan_config_write(vty, spaces, &writes);
+
 	return writes;
 }
 
@@ -336,6 +350,24 @@ int pim_interface_config_write(struct vty *vty)
 					++writes;
 				}
 
+				/* IF ip igmp last-member_query-count */
+				if (pim_ifp->igmp_last_member_query_count
+				    != IGMP_DEFAULT_ROBUSTNESS_VARIABLE) {
+					vty_out(vty,
+						" ip igmp last-member-query-count %d\n",
+						pim_ifp->igmp_last_member_query_count);
+					++writes;
+				}
+
+				/* IF ip igmp last-member_query-interval */
+				if (pim_ifp->igmp_specific_query_max_response_time_dsec
+				    != IGMP_SPECIFIC_QUERY_MAX_RESPONSE_TIME_DSEC) {
+					vty_out(vty,
+						" ip igmp last-member-query-interval %d\n",
+						pim_ifp->igmp_specific_query_max_response_time_dsec);
+					  ++writes;
+				}
+
 				/* IF ip igmp join */
 				if (pim_ifp->igmp_join_list) {
 					struct listnode *node;
@@ -375,7 +407,10 @@ int pim_interface_config_write(struct vty *vty)
 
 				writes +=
 					pim_static_write_mroute(pim, vty, ifp);
+				pim_bsm_write_config(vty, ifp);
+				++writes;
 				pim_bfd_write_config(vty, ifp);
+				++writes;
 			}
 			vty_endframe(vty, "!\n");
 			++writes;

@@ -38,6 +38,8 @@
 #include "lib_errors.h"
 #include "db.h"
 #include "northbound_cli.h"
+#include "northbound_db.h"
+#include "debug.h"
 
 DEFINE_HOOK(frr_late_init, (struct thread_master * tm), (tm))
 DEFINE_KOOH(frr_early_fini, (), ())
@@ -59,9 +61,9 @@ static char pidfile_default[512];
 #ifdef HAVE_SQLITE3
 static char dbfile_default[512];
 #endif
-static char vtypath_default[256];
+static char vtypath_default[512];
 
-bool debug_memstats_at_exit = 0;
+bool debug_memstats_at_exit = false;
 static bool nodetach_term, nodetach_daemon;
 
 static char comb_optstr[256];
@@ -79,8 +81,8 @@ static void opt_extend(const struct optspec *os)
 {
 	const struct option *lo;
 
-	strcat(comb_optstr, os->optstr);
-	strcat(comb_helpstr, os->helpstr);
+	strlcat(comb_optstr, os->optstr, sizeof(comb_optstr));
+	strlcat(comb_helpstr, os->helpstr, sizeof(comb_helpstr));
 	for (lo = os->longopts; lo->name; lo++)
 		memcpy(comb_next_lo++, lo, sizeof(*lo));
 }
@@ -653,7 +655,14 @@ struct thread_master *frr_init(void)
 	lib_error_init();
 
 	yang_init();
+
+	debug_init_cli();
+
 	nb_init(master, di->yang_modules, di->n_yang_modules);
+	if (nb_db_init() != NB_OK)
+		flog_warn(EC_LIB_NB_DATABASE,
+			  "%s: failed to initialize northbound database",
+			  __func__);
 
 	return master;
 }
@@ -825,7 +834,12 @@ static int frr_config_read_in(struct thread *t)
 	/*
 	 * Update the shared candidate after reading the startup configuration.
 	 */
-	nb_config_replace(vty_shared_candidate_config, running_config, true);
+	pthread_rwlock_rdlock(&running_config->lock);
+	{
+		nb_config_replace(vty_shared_candidate_config, running_config,
+				  true);
+	}
+	pthread_rwlock_unlock(&running_config->lock);
 
 	return 0;
 }

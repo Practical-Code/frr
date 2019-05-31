@@ -25,33 +25,9 @@
 #include "prefix.h"
 #include "vty.h"
 
-/* Nexthop structure. */
-struct rnh {
-	uint8_t flags;
-
-#define ZEBRA_NHT_CONNECTED  	0x1
-#define ZEBRA_NHT_DELETED       0x2
-#define ZEBRA_NHT_EXACT_MATCH   0x4
-
-	/* VRF identifier. */
-	vrf_id_t vrf_id;
-
-	struct route_entry *state;
-	struct prefix resolved_route;
-	struct list *client_list;
-
-	/* pseudowires dependent on this nh */
-	struct list *zebra_pseudowire_list;
-
-	struct route_node *node;
-
-	/*
-	 * if this has been filtered for the client
-	 */
-	int filtered[ZEBRA_ROUTE_MAX];
-};
-
-typedef enum { RNH_NEXTHOP_TYPE, RNH_IMPORT_CHECK_TYPE } rnh_type_t;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 extern int zebra_rnh_ip_default_route;
 extern int zebra_rnh_ipv6_default_route;
@@ -81,6 +57,11 @@ extern void zebra_remove_rnh_client(struct rnh *rnh, struct zserv *client,
 extern void zebra_evaluate_rnh(struct zebra_vrf *zvrf, afi_t afi, int force,
 			       rnh_type_t type, struct prefix *p);
 extern void zebra_print_rnh_table(vrf_id_t vrfid, afi_t afi, struct vty *vty,
-				  rnh_type_t);
+				  rnh_type_t type, struct prefix *p);
 extern char *rnh_str(struct rnh *rnh, char *buf, int size);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /*_ZEBRA_RNH_H */

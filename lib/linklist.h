@@ -21,6 +21,10 @@
 #ifndef _ZEBRA_LINKLIST_H
 #define _ZEBRA_LINKLIST_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* listnodes must always contain data to be valid. Adding an empty node
  * to a list is invalid
  */
@@ -80,7 +84,7 @@ extern struct list *list_new(void);
  * data
  *    element to add
  */
-extern void listnode_add(struct list *list, void *data);
+extern struct listnode *listnode_add(struct list *list, void *data);
 
 /*
  * Add a new element to the beginning of a list.
@@ -176,7 +180,7 @@ extern void listnode_move_to_tail(struct list *list, struct listnode *node);
  * data
  *    data to insert into list
  */
-extern void listnode_delete(struct list *list, void *data);
+extern void listnode_delete(struct list *list, const void *data);
 
 /*
  * Find the listnode corresponding to an element in a list.
@@ -190,7 +194,7 @@ extern void listnode_delete(struct list *list, void *data);
  * Returns:
  *    pointer to listnode storing the given data if found, NULL otherwise
  */
-extern struct listnode *listnode_lookup(struct list *list, void *data);
+extern struct listnode *listnode_lookup(struct list *list, const void *data);
 
 /*
  * Retrieve the element at the head of a list.
@@ -234,6 +238,26 @@ extern struct list *list_dup(struct list *l);
  */
 extern void list_sort(struct list *list,
 		      int (*cmp)(const void **, const void **));
+
+/*
+ * Convert a list to an array of void pointers.
+ *
+ * Starts from the list head and ends either on the last node of the list or
+ * when the provided array cannot store any more elements.
+ *
+ * list
+ *    list to convert
+ *
+ * arr
+ *    Pre-allocated array of void *
+ *
+ * arrlen
+ *    Number of elements in arr
+ *
+ * Returns:
+ *    arr
+ */
+void **list_to_array(struct list *list, void **arr, size_t arrlen);
 
 /*
  * Delete a list and NULL its pointer.
@@ -284,6 +308,39 @@ extern void list_delete_node(struct list *list, struct listnode *node);
  */
 extern void list_add_list(struct list *list, struct list *add);
 
+/*
+ * Delete all nodes which satisfy a condition from a list.
+ * Deletes the node if cond function returns true for the node.
+ * If function ptr passed is NULL, it deletes all nodes
+ *
+ * list
+ *    list to operate on
+ * cond
+ *    function pointer which takes node data as input and return TRUE or FALSE
+ */
+
+extern void list_filter_out_nodes(struct list *list, bool (*cond)(void *data));
+
+/*
+ * Insert a new element into a list with insertion sort if there is no
+ * duplicate element present in the list. This assumes the input list is
+ * sorted. If unsorted, it will check for duplicate until it finds out
+ * the position to do insertion sort with the unsorted list.
+ *
+ * If list->cmp is set, this function is used to determine the position to
+ * insert the new element. If it is not set, this function is equivalent to
+ * listnode_add. duplicate element is determined by cmp function returning 0.
+ *
+ * Runtime is O(N).
+ *
+ * list
+ *    list to operate on
+ *
+ * val
+ *    element to add
+ */
+
+extern bool listnode_add_sort_nodup(struct list *list, void *val);
 /* List iteration macro.
  * Usage: for (ALL_LIST_ELEMENTS (...) { ... }
  * It is safe to delete the listnode using this macro.
@@ -291,7 +348,8 @@ extern void list_add_list(struct list *list, struct list *add);
 #define ALL_LIST_ELEMENTS(list, node, nextnode, data)                          \
 	(node) = listhead(list), ((data) = NULL);                              \
 	(node) != NULL                                                         \
-		&& ((data) = listgetdata(node), (nextnode) = node->next, 1);   \
+		&& ((data) = static_cast(data, listgetdata(node)),             \
+		    (nextnode) = node->next, 1);                               \
 	(node) = (nextnode), ((data) = NULL)
 
 /* read-only list iteration macro.
@@ -302,7 +360,7 @@ extern void list_add_list(struct list *list, struct list *add);
  */
 #define ALL_LIST_ELEMENTS_RO(list, node, data)                                 \
 	(node) = listhead(list), ((data) = NULL);                              \
-	(node) != NULL && ((data) = listgetdata(node), 1);                     \
+	(node) != NULL && ((data) = static_cast(data, listgetdata(node)), 1);  \
 	(node) = listnextnode(node), ((data) = NULL)
 
 /* these *do not* cleanup list nodes and referenced data, as the functions
@@ -335,5 +393,19 @@ extern void list_add_list(struct list *list, struct list *add);
 			(L)->tail = (N)->prev;                                 \
 		(L)->count--;                                                  \
 	} while (0)
+
+extern struct listnode *listnode_lookup_nocheck(struct list *list, void *data);
+
+/*
+ * Add a node to *list, if non-NULL. Otherwise, allocate a new list, mail
+ * it back in *list, and add a new node.
+ *
+ * Return: the new node.
+ */
+extern struct listnode *listnode_add_force(struct list **list, void *val);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _ZEBRA_LINKLIST_H */

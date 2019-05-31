@@ -31,6 +31,15 @@
 #include "zebra/zebra_mpls.h"
 #include "zebra/zebra_dplane.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define RKERNEL_ROUTE(type) ((type) == ZEBRA_ROUTE_KERNEL)
+
+#define RSYSTEM_ROUTE(type)                                                    \
+	((RKERNEL_ROUTE(type)) || (type) == ZEBRA_ROUTE_CONNECT)
+
 /*
  * Update or delete a route, LSP, or pseudowire from the kernel,
  * using info from a dataplane context.
@@ -43,10 +52,9 @@ extern enum zebra_dplane_result kernel_lsp_update(
 
 enum zebra_dplane_result kernel_pw_update(struct zebra_dplane_ctx *ctx);
 
-extern int kernel_address_add_ipv4(struct interface *, struct connected *);
-extern int kernel_address_delete_ipv4(struct interface *, struct connected *);
-extern int kernel_address_add_ipv6(struct interface *, struct connected *);
-extern int kernel_address_delete_ipv6(struct interface *, struct connected *);
+enum zebra_dplane_result kernel_address_update_ctx(
+	struct zebra_dplane_ctx *ctx);
+
 extern int kernel_neigh_update(int cmd, int ifindex, uint32_t addr, char *lla,
 			       int llalen, ns_id_t ns_id);
 extern int kernel_interface_set_master(struct interface *master,
@@ -90,5 +98,9 @@ extern void neigh_read_for_vlan(struct zebra_ns *zns, struct interface *ifp);
 extern void neigh_read_specific_ip(struct ipaddr *ip,
 				   struct interface *vlan_if);
 extern void route_read(struct zebra_ns *zns);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _ZEBRA_RT_H */

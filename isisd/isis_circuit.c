@@ -40,7 +40,6 @@
 #include "qobj.h"
 #include "lib/northbound_cli.h"
 
-#include "isisd/dict.h"
 #include "isisd/isis_constants.h"
 #include "isisd/isis_common.h"
 #include "isisd/isis_flags.h"
@@ -540,7 +539,6 @@ static void isis_circuit_update_all_srmflags(struct isis_circuit *circuit,
 {
 	struct isis_area *area;
 	struct isis_lsp *lsp;
-	dnode_t *dnode;
 	int level;
 
 	assert(circuit);
@@ -550,14 +548,10 @@ static void isis_circuit_update_all_srmflags(struct isis_circuit *circuit,
 		if (!(level & circuit->is_type))
 			continue;
 
-		if (!area->lspdb[level - 1]
-		    || !dict_count(area->lspdb[level - 1]))
+		if (!lspdb_count(&area->lspdb[level - 1]))
 			continue;
 
-		for (dnode = dict_first(area->lspdb[level - 1]);
-		     dnode != NULL;
-		     dnode = dict_next(area->lspdb[level - 1], dnode)) {
-			lsp = dnode_get(dnode);
+		frr_each (lspdb, &area->lspdb[level - 1], lsp) {
 			if (is_set) {
 				isis_tx_queue_add(circuit->tx_queue, lsp,
 						  TX_LSP_NORMAL);
@@ -1305,8 +1299,8 @@ ferr_r isis_circuit_passwd_unset(struct isis_circuit *circuit)
 	return ferr_ok();
 }
 
-static int isis_circuit_passwd_set(struct isis_circuit *circuit,
-				   uint8_t passwd_type, const char *passwd)
+ferr_r isis_circuit_passwd_set(struct isis_circuit *circuit,
+			       uint8_t passwd_type, const char *passwd)
 {
 	int len;
 
@@ -1319,7 +1313,8 @@ static int isis_circuit_passwd_set(struct isis_circuit *circuit,
 			"circuit password too long (max 254 chars)");
 
 	circuit->passwd.len = len;
-	strncpy((char *)circuit->passwd.passwd, passwd, 255);
+	strlcpy((char *)circuit->passwd.passwd, passwd,
+		sizeof(circuit->passwd.passwd));
 	circuit->passwd.type = passwd_type;
 	return ferr_ok();
 }

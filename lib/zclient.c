@@ -49,13 +49,13 @@ enum event { ZCLIENT_SCHEDULE, ZCLIENT_READ, ZCLIENT_CONNECT };
 /* Prototype for event manager. */
 static void zclient_event(enum event, struct zclient *);
 
+struct zclient_options zclient_options_default = {.receive_notify = false};
+
 struct sockaddr_storage zclient_addr;
 socklen_t zclient_addr_len;
 
 /* This file local debug flag. */
-int zclient_debug = 0;
-
-struct zclient_options zclient_options_default = {.receive_notify = false};
+static int zclient_debug;
 
 /* Allocate zclient structure. */
 struct zclient *zclient_new(struct thread_master *master,
@@ -212,10 +212,7 @@ int zclient_socket_connect(struct zclient *zclient)
 		return -1;
 
 	set_cloexec(sock);
-
-	frr_elevate_privs(zclient->privs) {
-		setsockopt_so_sendbuf(sock, 1048576);
-	}
+	setsockopt_so_sendbuf(sock, 1048576);
 
 	/* Connect to zebra. */
 	ret = connect(sock, (struct sockaddr *)&zclient_addr, zclient_addr_len);
@@ -414,6 +411,9 @@ void zclient_send_reg_requests(struct zclient *zclient, vrf_id_t vrf_id)
 	/* We need router-id information. */
 	zebra_message_send(zclient, ZEBRA_ROUTER_ID_ADD, vrf_id);
 
+	/* We need interface information. */
+	zebra_message_send(zclient, ZEBRA_INTERFACE_ADD, vrf_id);
+
 	/* Set unwanted redistribute route. */
 	for (afi = AFI_IP; afi < AFI_MAX; afi++)
 		vrf_bitmap_set(zclient->redist[afi][zclient->redist_default],
@@ -477,6 +477,8 @@ void zclient_send_dereg_requests(struct zclient *zclient, vrf_id_t vrf_id)
 
 	/* We need router-id information. */
 	zebra_message_send(zclient, ZEBRA_ROUTER_ID_DELETE, vrf_id);
+
+	zebra_message_send(zclient, ZEBRA_INTERFACE_DELETE, vrf_id);
 
 	/* Set unwanted redistribute route. */
 	for (afi = AFI_IP; afi < AFI_MAX; afi++)
@@ -551,6 +553,25 @@ void zclient_send_interface_radv_req(struct zclient *zclient, vrf_id_t vrf_id,
 	stream_putw_at(s, 0, stream_get_endp(s));
 
 	zclient_send_message(zclient);
+}
+
+int zclient_send_interface_protodown(struct zclient *zclient, vrf_id_t vrf_id,
+				     struct interface *ifp, bool down)
+{
+	struct stream *s;
+
+	if (zclient->sock < 0)
+		return -1;
+
+	s = zclient->obuf;
+	stream_reset(s);
+	zclient_create_header(s, ZEBRA_INTERFACE_SET_PROTODOWN, vrf_id);
+	stream_putl(s, ifp->ifindex);
+	stream_putc(s, !!down);
+	stream_putw_at(s, 0, stream_get_endp(s));
+	zclient_send_message(zclient);
+
+	return 0;
 }
 
 /* Make connection to zebra daemon. */
@@ -629,7 +650,7 @@ void zclient_init(struct zclient *zclient, int redist_default,
 	}
 
 	if (zclient_debug)
-		zlog_debug("zclient_start is called");
+		zlog_debug("scheduling zclient connection");
 
 	zclient_event(ZCLIENT_SCHEDULE, zclient);
 }
@@ -1379,6 +1400,8 @@ stream_failure:
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  * |  bandwidth                                                    |
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |  parent ifindex                                               |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  * |  Link Layer Type                                              |
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  * |  Harware Address Length                                       |
@@ -1559,6 +1582,7 @@ void zebra_interface_if_set_value(struct stream *s, struct interface *ifp)
 	ifp->mtu = stream_getl(s);
 	ifp->mtu6 = stream_getl(s);
 	ifp->bandwidth = stream_getl(s);
+	ifp->link_ifindex = stream_getl(s);
 	ifp->ll_type = stream_getl(s);
 	ifp->hw_addr_len = stream_getl(s);
 	if (ifp->hw_addr_len)
@@ -2369,9 +2393,7 @@ int zebra_send_pw(struct zclient *zclient, int command, struct zapi_pw *pw)
 /*
  * Receive PW status update from Zebra and send it to LDE process.
  */
-void zebra_read_pw_status_update(int command, struct zclient *zclient,
-				 zebra_size_t length, vrf_id_t vrf_id,
-				 struct zapi_pw_status *pw)
+void zebra_read_pw_status_update(ZAPI_CALLBACK_ARGS, struct zapi_pw_status *pw)
 {
 	struct stream *s;
 
@@ -2384,8 +2406,7 @@ void zebra_read_pw_status_update(int command, struct zclient *zclient,
 	pw->status = stream_getl(s);
 }
 
-static void zclient_capability_decode(int command, struct zclient *zclient,
-				      zebra_size_t length, vrf_id_t vrf_id)
+static void zclient_capability_decode(ZAPI_CALLBACK_ARGS)
 {
 	struct zclient_capabilities cap;
 	struct stream *s = zclient->ibuf;
@@ -2504,8 +2525,9 @@ static int zclient_read(struct thread *thread)
 	length -= ZEBRA_HEADER_SIZE;
 
 	if (zclient_debug)
-		zlog_debug("zclient 0x%p command 0x%x VRF %u\n",
-			   (void *)zclient, command, vrf_id);
+		zlog_debug("zclient 0x%p command %s VRF %u",
+			   (void *)zclient, zserv_command_string(command),
+			   vrf_id);
 
 	switch (command) {
 	case ZEBRA_CAPABILITIES:
@@ -2574,14 +2596,14 @@ static int zclient_read(struct thread *thread)
 		break;
 	case ZEBRA_NEXTHOP_UPDATE:
 		if (zclient_debug)
-			zlog_debug("zclient rcvd nexthop update\n");
+			zlog_debug("zclient rcvd nexthop update");
 		if (zclient->nexthop_update)
 			(*zclient->nexthop_update)(command, zclient, length,
 						   vrf_id);
 		break;
 	case ZEBRA_IMPORT_CHECK_UPDATE:
 		if (zclient_debug)
-			zlog_debug("zclient rcvd import check update\n");
+			zlog_debug("zclient rcvd import check update");
 		if (zclient->import_check_update)
 			(*zclient->import_check_update)(command, zclient,
 							length, vrf_id);
@@ -2608,7 +2630,7 @@ static int zclient_read(struct thread *thread)
 		break;
 	case ZEBRA_FEC_UPDATE:
 		if (zclient_debug)
-			zlog_debug("zclient rcvd fec update\n");
+			zlog_debug("zclient rcvd fec update");
 		if (zclient->fec_update)
 			(*zclient->fec_update)(command, zclient, length);
 		break;
@@ -2698,6 +2720,17 @@ static int zclient_read(struct thread *thread)
 			(*zclient->iptable_notify_owner)(command,
 						 zclient, length,
 						 vrf_id);
+		break;
+	case ZEBRA_VXLAN_SG_ADD:
+		if (zclient->vxlan_sg_add)
+			(*zclient->vxlan_sg_add)(command, zclient, length,
+						    vrf_id);
+		break;
+	case ZEBRA_VXLAN_SG_DEL:
+		if (zclient->vxlan_sg_del)
+			(*zclient->vxlan_sg_del)(command, zclient, length,
+						    vrf_id);
+		break;
 	default:
 		break;
 	}

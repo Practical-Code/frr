@@ -99,6 +99,9 @@ enum bgp_af_index {
 	for (afi = AFI_IP; afi < AFI_MAX; afi++)                               \
 		for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++)
 
+#define FOREACH_SAFI(safi)                                            \
+	for (safi = SAFI_UNICAST; safi < SAFI_MAX; safi++)
+
 extern struct frr_pthread *bgp_pth_io;
 extern struct frr_pthread *bgp_pth_ka;
 
@@ -149,6 +152,9 @@ struct bgp_master {
 
 	/* dynamic mpls label allocation pool */
 	struct labelpool labelpool;
+
+	/* BGP-EVPN VRF ID. Defaults to default VRF (if any) */
+	struct bgp* bgp_evpn;
 
 	bool terminating;	/* global flag that sigint terminate seen */
 	QOBJ_FIELDS
@@ -342,7 +348,6 @@ struct bgp {
 #define BGP_FLAG_MED_CONFED               (1 << 3)
 #define BGP_FLAG_NO_DEFAULT_IPV4          (1 << 4)
 #define BGP_FLAG_NO_CLIENT_TO_CLIENT      (1 << 5)
-#define BGP_FLAG_ENFORCE_FIRST_AS         (1 << 6)
 #define BGP_FLAG_COMPARE_ROUTER_ID        (1 << 7)
 #define BGP_FLAG_ASPATH_IGNORE            (1 << 8)
 #define BGP_FLAG_IMPORT_CHECK             (1 << 9)
@@ -373,6 +378,9 @@ struct bgp {
 /* vrf-route leaking flags */
 #define BGP_CONFIG_VRF_TO_VRF_IMPORT			(1 << 7)
 #define BGP_CONFIG_VRF_TO_VRF_EXPORT			(1 << 8)
+
+	/* BGP per AF peer count */
+	uint32_t af_peer_count[AFI_MAX][SAFI_MAX];
 
 	/* Route table for next-hop lookup cache. */
 	struct bgp_table *nexthop_cache_table[AFI_MAX];
@@ -487,6 +495,11 @@ struct bgp {
 	/* EVPN enable - advertise local VNIs and their MACs etc. */
 	int advertise_all_vni;
 
+	/* RFC 8212 - prevent route leaks. */
+	int ebgp_requires_policy;
+#define DEFAULT_EBGP_POLICY_DISABLED 0
+#define DEFAULT_EBGP_POLICY_ENABLED 1
+
 	struct bgp_evpn_info *evpn_info;
 
 	/* EVPN - use RFC 8365 to auto-derive RT */
@@ -511,6 +524,9 @@ struct bgp {
 
 	/* originator ip - to be used as NH for type-5 routes */
 	struct in_addr originator_ip;
+
+	/* SVI associated with the L3-VNI corresponding to this vrf */
+	ifindex_t l3vni_svi_ifindex;
 
 	/* vrf flags */
 	uint32_t vrf_flags;
@@ -1498,6 +1514,8 @@ extern struct bgp *bgp_get_default(void);
 extern struct bgp *bgp_lookup(as_t, const char *);
 extern struct bgp *bgp_lookup_by_name(const char *);
 extern struct bgp *bgp_lookup_by_vrf_id(vrf_id_t);
+extern struct bgp *bgp_get_evpn(void);
+extern void bgp_set_evpn(struct bgp *bgp);
 extern struct peer *peer_lookup(struct bgp *, union sockunion *);
 extern struct peer *peer_lookup_by_conf_if(struct bgp *, const char *);
 extern struct peer *peer_lookup_by_hostname(struct bgp *, const char *);
@@ -1893,7 +1911,7 @@ static inline void bgp_vrf_unlink(struct bgp *bgp, struct vrf *vrf)
 	bgp->vrf_id = VRF_UNKNOWN;
 }
 
-extern void bgp_update_redist_vrf_bitmaps(struct bgp *, vrf_id_t);
+extern void bgp_unset_redist_vrf_bitmaps(struct bgp *, vrf_id_t);
 
 /* For benefit of rfapi */
 extern struct peer *peer_new(struct bgp *bgp);

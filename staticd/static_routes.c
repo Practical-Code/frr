@@ -127,7 +127,7 @@ int static_add_route(afi_t afi, safi_t safi, uint8_t type, struct prefix *p,
 	si->tag = tag;
 	si->vrf_id = svrf->vrf->vrf_id;
 	si->nh_vrf_id = nh_svrf->vrf->vrf_id;
-	strcpy(si->nh_vrfname, nh_svrf->vrf->name);
+	strlcpy(si->nh_vrfname, nh_svrf->vrf->name, sizeof(si->nh_vrfname));
 	si->table_id = table_id;
 	si->onlink = onlink;
 
@@ -329,6 +329,7 @@ static void static_fixup_vrf(struct static_vrf *svrf,
 				continue;
 
 			si->nh_vrf_id = svrf->vrf->vrf_id;
+			si->nh_registered = false;
 			if (si->ifindex) {
 				ifp = if_lookup_by_name(si->ifname,
 							si->nh_vrf_id);

@@ -84,16 +84,13 @@ static char *vty_ipv6_accesslist_name = NULL;
 static vector Vvty_serv_thread;
 
 /* Current directory. */
-char *vty_cwd = NULL;
-
-/* Exclusive configuration lock. */
-struct vty *vty_exclusive_lock;
+char vty_cwd[MAXPATHLEN];
 
 /* Login password check. */
 static int no_password_check = 0;
 
 /* Integrated configuration file path */
-char integrate_default[] = SYSCONFDIR INTEGRATE_DEFAULT_CONFIG;
+static char integrate_default[] = SYSCONFDIR INTEGRATE_DEFAULT_CONFIG;
 
 static int do_log_commands = 0;
 
@@ -974,8 +971,7 @@ static void vty_complete_command(struct vty *vty)
 	default:
 		break;
 	}
-	if (matched)
-		XFREE(MTYPE_TMP, matched);
+	XFREE(MTYPE_TMP, matched);
 }
 
 static void vty_describe_fold(struct vty *vty, int cmd_width,
@@ -1002,7 +998,7 @@ static void vty_describe_fold(struct vty *vty, int cmd_width,
 		if (pos == 0)
 			break;
 
-		strncpy(buf, p, pos);
+		memcpy(buf, p, pos);
 		buf[pos] = '\0';
 		vty_out(vty, "  %-*s  %s\n", cmd_width, cmd, buf);
 
@@ -1169,8 +1165,7 @@ static void vty_hist_add(struct vty *vty)
 		}
 
 	/* Insert history entry. */
-	if (vty->hist[vty->hindex])
-		XFREE(MTYPE_VTY_HIST, vty->hist[vty->hindex]);
+	XFREE(MTYPE_VTY_HIST, vty->hist[vty->hindex]);
 	vty->hist[vty->hindex] = XSTRDUP(MTYPE_VTY_HIST, vty->buf);
 
 	/* History index rotation. */
@@ -1664,7 +1659,7 @@ static struct vty *vty_create(int vty_sock, union sockunion *su)
 
 	/* configurable parameters not part of basic init */
 	vty->v_timeout = vty_timeout_val;
-	strcpy(vty->address, buf);
+	strlcpy(vty->address, buf, sizeof(vty->address));
 	if (no_password_check) {
 		if (host.advanced)
 			vty->node = ENABLE_NODE;
@@ -1800,7 +1795,7 @@ struct vty *vty_stdio(void (*atclose)(int isexit))
 	 */
 	vty->node = ENABLE_NODE;
 	vty->v_timeout = 0;
-	strcpy(vty->address, "console");
+	strlcpy(vty->address, "console", sizeof(vty->address));
 
 	vty_stdio_resume();
 	return vty;
@@ -2232,9 +2227,9 @@ void vty_close(struct vty *vty)
 	buffer_free(vty->lbuf);
 
 	/* Free command history. */
-	for (i = 0; i < VTY_MAXHIST; i++)
-		if (vty->hist[i])
-			XFREE(MTYPE_VTY_HIST, vty->hist[i]);
+	for (i = 0; i < VTY_MAXHIST; i++) {
+		XFREE(MTYPE_VTY_HIST, vty->hist[i]);
+	}
 
 	/* Unset vector. */
 	if (vty->fd != -1)
@@ -2255,8 +2250,7 @@ void vty_close(struct vty *vty)
 	if (vty->fd == STDIN_FILENO)
 		was_stdio = true;
 
-	if (vty->buf)
-		XFREE(MTYPE_VTY, vty->buf);
+	XFREE(MTYPE_VTY, vty->buf);
 
 	if (vty->error) {
 		vty->error->del = vty_error_delete;
@@ -2372,7 +2366,7 @@ static void vty_read_file(struct nb_config *config, FILE *confp)
 	if (config == NULL && vty->candidate_config
 	    && frr_get_cli_mode() == FRR_CLI_TRANSACTIONAL) {
 		ret = nb_candidate_commit(vty->candidate_config, NB_CLIENT_CLI,
-					  true, "Read configuration file",
+					  vty, true, "Read configuration file",
 					  NULL);
 		if (ret != NB_OK && ret != NB_ERR_NO_CHANGES)
 			zlog_err("%s: failed to read configuration file.",
@@ -2390,9 +2384,10 @@ static FILE *vty_use_backup_config(const char *fullpath)
 	int c;
 	char buffer[512];
 
-	fullpath_sav = malloc(strlen(fullpath) + strlen(CONF_BACKUP_EXT) + 1);
-	strcpy(fullpath_sav, fullpath);
-	strcat(fullpath_sav, CONF_BACKUP_EXT);
+	size_t fullpath_sav_sz = strlen(fullpath) + strlen(CONF_BACKUP_EXT) + 1;
+	fullpath_sav = malloc(fullpath_sav_sz);
+	strlcpy(fullpath_sav, fullpath, fullpath_sav_sz);
+	strlcat(fullpath_sav, CONF_BACKUP_EXT, fullpath_sav_sz);
 
 	sav = open(fullpath_sav, O_RDONLY);
 	if (sav < 0) {
@@ -2546,8 +2541,7 @@ bool vty_read_config(struct nb_config *config, const char *config_file,
 	host_config_set(fullpath);
 
 tmp_free_and_out:
-	if (tmp)
-		XFREE(MTYPE_TMP, tmp);
+	XFREE(MTYPE_TMP, tmp);
 
 	return read_success;
 }
@@ -2605,8 +2599,8 @@ void vty_log_fixed(char *buf, size_t len)
 
 int vty_config_enter(struct vty *vty, bool private_config, bool exclusive)
 {
-	if (exclusive && !vty_config_exclusive_lock(vty)) {
-		vty_out(vty, "VTY configuration is locked by other VTY\n");
+	if (exclusive && nb_running_lock(NB_CLIENT_CLI, vty)) {
+		vty_out(vty, "%% Configuration is locked by other client\n");
 		return CMD_WARNING;
 	}
 
@@ -2615,17 +2609,22 @@ int vty_config_enter(struct vty *vty, bool private_config, bool exclusive)
 	vty->private_config = private_config;
 	vty->xpath_index = 0;
 
-	if (private_config) {
-		vty->candidate_config = nb_config_dup(running_config);
-		vty->candidate_config_base = nb_config_dup(running_config);
-		vty_out(vty,
-			"Warning: uncommitted changes will be discarded on exit.\n\n");
-	} else {
-		vty->candidate_config = vty_shared_candidate_config;
-		if (frr_get_cli_mode() == FRR_CLI_TRANSACTIONAL)
+	pthread_rwlock_rdlock(&running_config->lock);
+	{
+		if (private_config) {
+			vty->candidate_config = nb_config_dup(running_config);
 			vty->candidate_config_base =
 				nb_config_dup(running_config);
+			vty_out(vty,
+				"Warning: uncommitted changes will be discarded on exit.\n\n");
+		} else {
+			vty->candidate_config = vty_shared_candidate_config;
+			if (frr_get_cli_mode() == FRR_CLI_TRANSACTIONAL)
+				vty->candidate_config_base =
+					nb_config_dup(running_config);
+		}
 	}
+	pthread_rwlock_unlock(&running_config->lock);
 
 	return CMD_SUCCESS;
 }
@@ -2640,7 +2639,7 @@ void vty_config_exit(struct vty *vty)
 		nb_cli_confirmed_commit_clean(vty);
 	}
 
-	vty_config_exclusive_unlock(vty);
+	(void)nb_running_unlock(NB_CLIENT_CLI, vty);
 
 	if (vty->candidate_config) {
 		if (vty->private_config)
@@ -2653,21 +2652,6 @@ void vty_config_exit(struct vty *vty)
 	}
 
 	vty->config = false;
-}
-
-int vty_config_exclusive_lock(struct vty *vty)
-{
-	if (vty_exclusive_lock == NULL) {
-		vty_exclusive_lock = vty;
-		return 1;
-	}
-	return 0;
-}
-
-void vty_config_exclusive_unlock(struct vty *vty)
-{
-	if (vty_exclusive_lock == vty)
-		vty_exclusive_lock = NULL;
 }
 
 /* Master of the threads. */
@@ -3072,10 +3056,9 @@ void vty_reset(void)
 
 static void vty_save_cwd(void)
 {
-	char cwd[MAXPATHLEN];
 	char *c;
 
-	c = getcwd(cwd, MAXPATHLEN);
+	c = getcwd(vty_cwd, sizeof(vty_cwd));
 
 	if (!c) {
 		/*
@@ -3089,15 +3072,12 @@ static void vty_save_cwd(void)
 				     SYSCONFDIR, errno);
 			exit(-1);
 		}
-		if (getcwd(cwd, MAXPATHLEN) == NULL) {
+		if (getcwd(vty_cwd, sizeof(vty_cwd)) == NULL) {
 			flog_err_sys(EC_LIB_SYSTEM_CALL,
 				     "Failure to getcwd, errno: %d", errno);
 			exit(-1);
 		}
 	}
-
-	vty_cwd = XMALLOC(MTYPE_TMP, strlen(cwd) + 1);
-	strcpy(vty_cwd, cwd);
 }
 
 char *vty_get_cwd(void)
@@ -3163,8 +3143,7 @@ void vty_init(struct thread_master *master_thread)
 
 void vty_terminate(void)
 {
-	if (vty_cwd)
-		XFREE(MTYPE_TMP, vty_cwd);
+	memset(vty_cwd, 0x00, sizeof(vty_cwd));
 
 	if (vtyvec && Vvty_serv_thread) {
 		vty_reset();

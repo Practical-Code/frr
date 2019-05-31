@@ -104,7 +104,7 @@ static int vty_close_pager(struct vty *vty)
 	return 0;
 }
 
-static void vtysh_pager_envdef(void)
+static void vtysh_pager_envdef(bool fallback)
 {
 	char *pager_defined;
 
@@ -112,7 +112,7 @@ static void vtysh_pager_envdef(void)
 
 	if (pager_defined)
 		vtysh_pager_name = strdup(pager_defined);
-	else
+	else if (fallback)
 		vtysh_pager_name = strdup(VTYSH_PAGER);
 }
 
@@ -137,6 +137,7 @@ struct vtysh_client vtysh_client[] = {
 	{.fd = -1, .name = "pbrd", .flag = VTYSH_PBRD, .next = NULL},
 	{.fd = -1, .name = "staticd", .flag = VTYSH_STATICD, .next = NULL},
 	{.fd = -1, .name = "bfdd", .flag = VTYSH_BFDD, .next = NULL},
+	{.fd = -1, .name = "vrrpd", .flag = VTYSH_VRRPD, .next = NULL},
 };
 
 enum vtysh_write_integrated vtysh_write_integrated =
@@ -502,7 +503,7 @@ static int vtysh_execute_func(const char *line, int pager)
 			vtysh_execute("exit");
 		} else if (tried) {
 			vtysh_execute("end");
-			vtysh_execute("configure terminal");
+			vtysh_execute("configure");
 		}
 	}
 	/*
@@ -540,7 +541,7 @@ static int vtysh_execute_func(const char *line, int pager)
 		if (pager && strncmp(line, "exit", 4))
 			vty_open_pager(vty);
 
-		if (!strcmp(cmd->string, "configure terminal")) {
+		if (!strcmp(cmd->string, "configure")) {
 			for (i = 0; i < array_size(vtysh_client); i++) {
 				cmd_stat = vtysh_client_execute(
 					&vtysh_client[i], line);
@@ -674,13 +675,13 @@ int vtysh_mark_file(const char *filename)
 	vty->node = CONFIG_NODE;
 
 	vtysh_execute_no_pager("enable");
-	vtysh_execute_no_pager("configure terminal");
+	vtysh_execute_no_pager("configure");
 	vty_buf_copy = XCALLOC(MTYPE_VTYSH_CMD, VTY_BUFSIZ);
 
 	while (fgets(vty->buf, VTY_BUFSIZ, confp)) {
 		lineno++;
 		tried = 0;
-		strcpy(vty_buf_copy, vty->buf);
+		strlcpy(vty_buf_copy, vty->buf, VTY_BUFSIZ);
 		vty_buf_trimmed = trim(vty_buf_copy);
 
 		switch (vty->node) {
@@ -1305,6 +1306,7 @@ DEFUNSH(VTYSH_BGPD, router_bgp, router_bgp_cmd,
 	return CMD_SUCCESS;
 }
 
+#ifdef KEEP_OLD_VPN_COMMANDS
 DEFUNSH(VTYSH_BGPD, address_family_vpnv4, address_family_vpnv4_cmd,
 	"address-family vpnv4 [unicast]",
 	"Enter Address Family command mode\n"
@@ -1324,6 +1326,7 @@ DEFUNSH(VTYSH_BGPD, address_family_vpnv6, address_family_vpnv6_cmd,
 	vty->node = BGP_VPNV6_NODE;
 	return CMD_SUCCESS;
 }
+#endif /* KEEP_OLD_VPN_COMMANDS */
 
 DEFUNSH(VTYSH_BGPD, address_family_ipv4, address_family_ipv4_cmd,
 	"address-family ipv4 [unicast]",
@@ -1519,15 +1522,15 @@ DEFUNSH(VTYSH_KEYS, key, key_cmd, "key (0-2147483647)",
 	return CMD_SUCCESS;
 }
 
-DEFUNSH(VTYSH_RIPD, router_rip, router_rip_cmd, "router rip",
-	ROUTER_STR "RIP\n")
+DEFUNSH(VTYSH_RIPD, router_rip, router_rip_cmd, "router rip [vrf NAME]",
+	ROUTER_STR "RIP\n" VRF_CMD_HELP_STR)
 {
 	vty->node = RIP_NODE;
 	return CMD_SUCCESS;
 }
 
-DEFUNSH(VTYSH_RIPNGD, router_ripng, router_ripng_cmd, "router ripng",
-	ROUTER_STR "RIPng\n")
+DEFUNSH(VTYSH_RIPNGD, router_ripng, router_ripng_cmd, "router ripng [vrf NAME]",
+	ROUTER_STR "RIPng\n" VRF_CMD_HELP_STR)
 {
 	vty->node = RIPNG_NODE;
 	return CMD_SUCCESS;
@@ -1742,7 +1745,7 @@ DEFUNSH(VTYSH_REALLYALL, vtysh_disable, vtysh_disable_cmd, "disable",
 }
 
 DEFUNSH(VTYSH_REALLYALL, vtysh_config_terminal, vtysh_config_terminal_cmd,
-	"configure terminal",
+	"configure [terminal]",
 	"Configuration from vty interface\n"
 	"Configuration terminal\n")
 {
@@ -1784,7 +1787,7 @@ static int vtysh_exit(struct vty *vty)
 	case BFD_NODE:
 	case RPKI_NODE:
 		vtysh_execute("end");
-		vtysh_execute("configure terminal");
+		vtysh_execute("configure");
 		vty->node = CONFIG_NODE;
 		break;
 	case BGP_VPNV4_NODE:
@@ -2170,7 +2173,7 @@ DEFUNSH(VTYSH_VRF, vtysh_quit_vrf, vtysh_quit_vrf_cmd, "quit",
 	return vtysh_exit_vrf(self, vty, argc, argv);
 }
 
-DEFUNSH(VTYSH_PBRD, vtysh_exit_nexthop_group, vtysh_exit_nexthop_group_cmd,
+DEFUNSH(VTYSH_PBRD | VTYSH_SHARPD, vtysh_exit_nexthop_group, vtysh_exit_nexthop_group_cmd,
 	"exit", "Exit current mode and down to previous mode\n")
 {
 	return vtysh_exit(vty);
@@ -2550,6 +2553,15 @@ DEFUNSH(VTYSH_ALL, vtysh_log_timestamp_precision,
 	return CMD_SUCCESS;
 }
 
+DEFUNSH(VTYSH_ALL, vtysh_debug_memstats,
+	vtysh_debug_memstats_cmd, "[no] debug memstats-at-exit",
+	NO_STR
+	"Debug\n"
+	"Print memory statistics at exit\n")
+{
+	return CMD_SUCCESS;
+}
+
 DEFUNSH(VTYSH_ALL, no_vtysh_log_timestamp_precision,
 	no_vtysh_log_timestamp_precision_cmd, "no log timestamp precision",
 	NO_STR
@@ -2699,9 +2711,10 @@ static void backup_config_file(const char *fbackup)
 {
 	char *integrate_sav = NULL;
 
-	integrate_sav = malloc(strlen(fbackup) + strlen(CONF_BACKUP_EXT) + 1);
-	strcpy(integrate_sav, fbackup);
-	strcat(integrate_sav, CONF_BACKUP_EXT);
+	size_t integrate_sav_sz = strlen(fbackup) + strlen(CONF_BACKUP_EXT) + 1;
+	integrate_sav = malloc(integrate_sav_sz);
+	strlcpy(integrate_sav, fbackup, integrate_sav_sz);
+	strlcat(integrate_sav, CONF_BACKUP_EXT, integrate_sav_sz);
 
 	/* Move current configuration file to backup config file. */
 	if (unlink(integrate_sav) != 0) {
@@ -2893,7 +2906,7 @@ DEFUN (vtysh_terminal_paginate,
 	vtysh_pager_name = NULL;
 
 	if (strcmp(argv[0]->text, "no"))
-		vtysh_pager_envdef();
+		vtysh_pager_envdef(true);
 	return CMD_SUCCESS;
 }
 
@@ -2913,7 +2926,7 @@ DEFUN (vtysh_terminal_length,
 
 	if (!strcmp(argv[0]->text, "no") || !strcmp(argv[1]->text, "no")) {
 		/* "terminal no length" = use VTYSH_PAGER */
-		vtysh_pager_envdef();
+		vtysh_pager_envdef(true);
 		return CMD_SUCCESS;
 	}
 
@@ -2922,7 +2935,7 @@ DEFUN (vtysh_terminal_length,
 		vty_out(vty,
 			"%% The \"terminal length\" command is deprecated and its value is ignored.\n"
 			"%% Please use \"terminal paginate\" instead with OS TTY length handling.\n");
-		vtysh_pager_envdef();
+		vtysh_pager_envdef(true);
 	}
 
 	return CMD_SUCCESS;
@@ -3330,7 +3343,7 @@ static void vtysh_client_sorted_insert(struct vtysh_client *head_client,
 
 #define MAXIMUM_INSTANCES 10
 
-static void vtysh_update_all_insances(struct vtysh_client *head_client)
+static void vtysh_update_all_instances(struct vtysh_client *head_client)
 {
 	struct vtysh_client *client;
 	DIR *dir;
@@ -3344,7 +3357,7 @@ static void vtysh_update_all_insances(struct vtysh_client *head_client)
 	dir = opendir(vtydir);
 	if (dir) {
 		while ((file = readdir(dir)) != NULL) {
-			if (begins_with(file->d_name, "ospfd-")
+			if (frrstr_startswith(file->d_name, "ospfd-")
 			    && ends_with(file->d_name, ".vty")) {
 				if (n == MAXIMUM_INSTANCES) {
 					fprintf(stderr,
@@ -3373,7 +3386,7 @@ static int vtysh_connect_all_instances(struct vtysh_client *head_client)
 	struct vtysh_client *client;
 	int rc = 0;
 
-	vtysh_update_all_insances(head_client);
+	vtysh_update_all_instances(head_client);
 
 	client = head_client->next;
 	while (client) {
@@ -3425,7 +3438,7 @@ void vtysh_readline_init(void)
 
 char *vtysh_prompt(void)
 {
-	static char buf[100];
+	static char buf[512];
 
 	snprintf(buf, sizeof buf, cmd_prompt(vty->node), cmd_hostname_get());
 	return buf;
@@ -3479,6 +3492,7 @@ void vtysh_init_vty(void)
 
 	/* set default output */
 	vty->of = stdout;
+	vtysh_pager_envdef(false);
 
 	/* Initialize commands. */
 	cmd_init(0);
@@ -3734,8 +3748,10 @@ void vtysh_init_vty(void)
 	install_element(CONFIG_NODE, &router_isis_cmd);
 	install_element(CONFIG_NODE, &router_openfabric_cmd);
 	install_element(CONFIG_NODE, &router_bgp_cmd);
+#ifdef KEEP_OLD_VPN_COMMANDS
 	install_element(BGP_NODE, &address_family_vpnv4_cmd);
 	install_element(BGP_NODE, &address_family_vpnv6_cmd);
+#endif /* KEEP_OLD_VPN_COMMANDS */
 #if defined(ENABLE_BGP_VNC)
 	install_element(BGP_NODE, &vnc_vrf_policy_cmd);
 	install_element(BGP_NODE, &vnc_defaults_cmd);
@@ -3812,6 +3828,7 @@ void vtysh_init_vty(void)
 	/* "write memory" command. */
 	install_element(ENABLE_NODE, &vtysh_write_memory_cmd);
 
+	install_element(CONFIG_NODE, &vtysh_terminal_paginate_cmd);
 	install_element(VIEW_NODE, &vtysh_terminal_paginate_cmd);
 	install_element(VIEW_NODE, &vtysh_terminal_length_cmd);
 	install_element(VIEW_NODE, &vtysh_terminal_no_length_cmd);
@@ -3841,6 +3858,8 @@ void vtysh_init_vty(void)
 	install_element(VIEW_NODE, &vtysh_show_debugging_hashtable_cmd);
 	install_element(ENABLE_NODE, &vtysh_debug_all_cmd);
 	install_element(CONFIG_NODE, &vtysh_debug_all_cmd);
+	install_element(ENABLE_NODE, &vtysh_debug_memstats_cmd);
+	install_element(CONFIG_NODE, &vtysh_debug_memstats_cmd);
 
 	/* misc lib show commands */
 	install_element(VIEW_NODE, &vtysh_show_memory_cmd);

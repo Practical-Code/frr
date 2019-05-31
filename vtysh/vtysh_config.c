@@ -74,8 +74,7 @@ static int config_cmp(struct config *c1, struct config *c2)
 static void config_del(struct config *config)
 {
 	list_delete(&config->line);
-	if (config->name)
-		XFREE(MTYPE_VTYSH_CONFIG_LINE, config->name);
+	XFREE(MTYPE_VTYSH_CONFIG_LINE, config->name);
 	XFREE(MTYPE_VTYSH_CONFIG, config);
 }
 
@@ -258,6 +257,10 @@ void vtysh_config_parse_line(void *arg, const char *line)
 					      strlen(" exit-vrf"))
 					      == 0) {
 				config_add_line_uniq_end(config->line, line);
+			} else if (!strncmp(line, " vrrp", strlen(" vrrp"))
+				   || !strncmp(line, " no vrrp",
+					       strlen(" no vrrp"))) {
+				config_add_line(config->line, line);
 			} else if (config->index == RMAP_NODE
 				   || config->index == INTERFACE_NODE
 				   || config->index == LOGICALROUTER_NODE
@@ -518,10 +521,10 @@ int vtysh_read_config(const char *config_default_dir)
  */
 void vtysh_config_write(void)
 {
-	char line[81];
+	char line[512];
 
 	if (cmd_hostname_get()) {
-		sprintf(line, "hostname %s", cmd_hostname_get());
+		snprintf(line, sizeof(line), "hostname %s", cmd_hostname_get());
 		vtysh_config_parse_line(NULL, line);
 	}
 

@@ -58,8 +58,7 @@ static struct interface *zebra_interface_if_lookup(struct stream *s)
 }
 
 /* Inteface addition message from zebra. */
-static int interface_add(int command, struct zclient *zclient,
-			 zebra_size_t length, vrf_id_t vrf_id)
+static int interface_add(ZAPI_CALLBACK_ARGS)
 {
 	struct interface *ifp;
 
@@ -71,8 +70,7 @@ static int interface_add(int command, struct zclient *zclient,
 	return 0;
 }
 
-static int interface_delete(int command, struct zclient *zclient,
-			    zebra_size_t length, vrf_id_t vrf_id)
+static int interface_delete(ZAPI_CALLBACK_ARGS)
 {
 	struct interface *ifp;
 	struct stream *s;
@@ -90,21 +88,19 @@ static int interface_delete(int command, struct zclient *zclient,
 	return 0;
 }
 
-static int interface_address_add(int command, struct zclient *zclient,
-				 zebra_size_t length, vrf_id_t vrf_id)
+static int interface_address_add(ZAPI_CALLBACK_ARGS)
 {
 
-	zebra_interface_address_read(command, zclient->ibuf, vrf_id);
+	zebra_interface_address_read(cmd, zclient->ibuf, vrf_id);
 
 	return 0;
 }
 
-static int interface_address_delete(int command, struct zclient *zclient,
-				    zebra_size_t length, vrf_id_t vrf_id)
+static int interface_address_delete(ZAPI_CALLBACK_ARGS)
 {
 	struct connected *c;
 
-	c = zebra_interface_address_read(command, zclient->ibuf, vrf_id);
+	c = zebra_interface_address_read(cmd, zclient->ibuf, vrf_id);
 
 	if (!c)
 		return 0;
@@ -113,8 +109,7 @@ static int interface_address_delete(int command, struct zclient *zclient,
 	return 0;
 }
 
-static int interface_state_up(int command, struct zclient *zclient,
-			      zebra_size_t length, vrf_id_t vrf_id)
+static int interface_state_up(ZAPI_CALLBACK_ARGS)
 {
 
 	zebra_interface_if_lookup(zclient->ibuf);
@@ -122,8 +117,7 @@ static int interface_state_up(int command, struct zclient *zclient,
 	return 0;
 }
 
-static int interface_state_down(int command, struct zclient *zclient,
-				zebra_size_t length, vrf_id_t vrf_id)
+static int interface_state_down(ZAPI_CALLBACK_ARGS)
 {
 
 	zebra_interface_state_read(zclient->ibuf, vrf_id);
@@ -131,8 +125,8 @@ static int interface_state_down(int command, struct zclient *zclient,
 	return 0;
 }
 
-void sharp_install_routes_helper(struct prefix *p, uint8_t instance,
-				 struct nexthop_group *nhg,
+void sharp_install_routes_helper(struct prefix *p, vrf_id_t vrf_id,
+				 uint8_t instance, struct nexthop_group *nhg,
 				 uint32_t routes)
 {
 	uint32_t temp, i;
@@ -148,7 +142,7 @@ void sharp_install_routes_helper(struct prefix *p, uint8_t instance,
 
 	monotime(&sg.r.t_start);
 	for (i = 0; i < routes; i++) {
-		route_add(p, (uint8_t)instance, nhg);
+		route_add(p, vrf_id, (uint8_t)instance, nhg);
 		if (v4)
 			p->u.prefix4.s_addr = htonl(++temp);
 		else
@@ -156,8 +150,8 @@ void sharp_install_routes_helper(struct prefix *p, uint8_t instance,
 	}
 }
 
-void sharp_remove_routes_helper(struct prefix *p, uint8_t instance,
-				uint32_t routes)
+void sharp_remove_routes_helper(struct prefix *p, vrf_id_t vrf_id,
+				uint8_t instance, uint32_t routes)
 {
 	uint32_t temp, i;
 	bool v4 = false;
@@ -172,7 +166,7 @@ void sharp_remove_routes_helper(struct prefix *p, uint8_t instance,
 
 	monotime(&sg.r.t_start);
 	for (i = 0; i < routes; i++) {
-		route_delete(p, (uint8_t)instance);
+		route_delete(p, vrf_id, (uint8_t)instance);
 		if (v4)
 			p->u.prefix4.s_addr = htonl(++temp);
 		else
@@ -190,18 +184,19 @@ static void handle_repeated(bool installed)
 
 	if (installed) {
 		sg.r.removed_routes = 0;
-		sharp_remove_routes_helper(&p, sg.r.inst, sg.r.total_routes);
+		sharp_remove_routes_helper(&p, sg.r.vrf_id,
+					   sg.r.inst, sg.r.total_routes);
 	}
 
 	if (installed) {
 		sg.r.installed_routes = 0;
-		sharp_install_routes_helper(&p, sg.r.inst, &sg.r.nhop_group,
+		sharp_install_routes_helper(&p, sg.r.vrf_id, sg.r.inst,
+					    &sg.r.nhop_group,
 					    sg.r.total_routes);
 	}
 }
 
-static int route_notify_owner(int command, struct zclient *zclient,
-			      zebra_size_t length, vrf_id_t vrf_id)
+static int route_notify_owner(ZAPI_CALLBACK_ARGS)
 {
 	struct timeval r;
 	struct prefix p;
@@ -255,7 +250,8 @@ void vrf_label_add(vrf_id_t vrf_id, afi_t afi, mpls_label_t label)
 	zclient_send_vrf_label(zclient, vrf_id, afi, label, ZEBRA_LSP_SHARP);
 }
 
-void route_add(struct prefix *p, uint8_t instance, struct nexthop_group *nhg)
+void route_add(struct prefix *p, vrf_id_t vrf_id,
+	       uint8_t instance, struct nexthop_group *nhg)
 {
 	struct zapi_route api;
 	struct zapi_nexthop *api_nh;
@@ -263,7 +259,7 @@ void route_add(struct prefix *p, uint8_t instance, struct nexthop_group *nhg)
 	int i = 0;
 
 	memset(&api, 0, sizeof(api));
-	api.vrf_id = VRF_DEFAULT;
+	api.vrf_id = vrf_id;
 	api.type = ZEBRA_ROUTE_SHARP;
 	api.instance = instance;
 	api.safi = SAFI_UNICAST;
@@ -274,7 +270,7 @@ void route_add(struct prefix *p, uint8_t instance, struct nexthop_group *nhg)
 
 	for (ALL_NEXTHOPS_PTR(nhg, nh)) {
 		api_nh = &api.nexthops[i];
-		api_nh->vrf_id = VRF_DEFAULT;
+		api_nh->vrf_id = nh->vrf_id;
 		api_nh->type = nh->type;
 		switch (nh->type) {
 		case NEXTHOP_TYPE_IPV4:
@@ -305,12 +301,12 @@ void route_add(struct prefix *p, uint8_t instance, struct nexthop_group *nhg)
 	zclient_route_send(ZEBRA_ROUTE_ADD, zclient, &api);
 }
 
-void route_delete(struct prefix *p, uint8_t instance)
+void route_delete(struct prefix *p, vrf_id_t vrf_id, uint8_t instance)
 {
 	struct zapi_route api;
 
 	memset(&api, 0, sizeof(api));
-	api.vrf_id = VRF_DEFAULT;
+	api.vrf_id = vrf_id;
 	api.type = ZEBRA_ROUTE_SHARP;
 	api.safi = SAFI_UNICAST;
 	api.instance = instance;
@@ -320,20 +316,29 @@ void route_delete(struct prefix *p, uint8_t instance)
 	return;
 }
 
-void sharp_zebra_nexthop_watch(struct prefix *p, bool watch, bool connected)
+void sharp_zebra_nexthop_watch(struct prefix *p, vrf_id_t vrf_id, bool import,
+			       bool watch, bool connected)
 {
-	int command = ZEBRA_NEXTHOP_REGISTER;
+	int command;
 
-	if (!watch)
-		command = ZEBRA_NEXTHOP_UNREGISTER;
+	if (!import) {
+		command = ZEBRA_NEXTHOP_REGISTER;
 
-	if (zclient_send_rnh(zclient, command, p, connected, VRF_DEFAULT) < 0)
+		if (!watch)
+			command = ZEBRA_NEXTHOP_UNREGISTER;
+	} else {
+		command = ZEBRA_IMPORT_ROUTE_REGISTER;
+
+		if (!watch)
+			command = ZEBRA_IMPORT_ROUTE_UNREGISTER;
+	}
+
+	if (zclient_send_rnh(zclient, command, p, connected, vrf_id) < 0)
 		zlog_warn("%s: Failure to send nexthop to zebra",
 			  __PRETTY_FUNCTION__);
 }
 
-static int sharp_nexthop_update(int command, struct zclient *zclient,
-				zebra_size_t length, vrf_id_t vrf_id)
+static int sharp_nexthop_update(ZAPI_CALLBACK_ARGS)
 {
 	struct sharp_nh_tracker *nht;
 	struct zapi_route nhr;
@@ -405,4 +410,5 @@ void sharp_zebra_init(void)
 	zclient->interface_address_delete = interface_address_delete;
 	zclient->route_notify_owner = route_notify_owner;
 	zclient->nexthop_update = sharp_nexthop_update;
+	zclient->import_check_update = sharp_nexthop_update;
 }

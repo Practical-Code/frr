@@ -866,7 +866,7 @@ int str2prefix_ipv4(const char *str, struct prefix_ipv4 *p)
 		return ret;
 	} else {
 		cp = XMALLOC(MTYPE_TMP, (pnt - str) + 1);
-		strncpy(cp, str, pnt - str);
+		memcpy(cp, str, pnt - str);
 		*(cp + (pnt - str)) = '\0';
 		ret = inet_aton(cp, &p->prefix);
 		XFREE(MTYPE_TMP, cp);
@@ -913,7 +913,7 @@ int str2prefix_eth(const char *str, struct prefix_eth *p)
 		}
 
 		cp = XMALLOC(MTYPE_TMP, (pnt - str) + 1);
-		strncpy(cp, str, pnt - str);
+		memcpy(cp, str, pnt - str);
 		*(cp + (pnt - str)) = '\0';
 
 		str_addr = cp;
@@ -944,8 +944,7 @@ int str2prefix_eth(const char *str, struct prefix_eth *p)
 	ret = 1;
 
 done:
-	if (cp)
-		XFREE(MTYPE_TMP, cp);
+	XFREE(MTYPE_TMP, cp);
 
 	return ret;
 }
@@ -1030,7 +1029,7 @@ int str2prefix_ipv6(const char *str, struct prefix_ipv6 *p)
 		int plen;
 
 		cp = XMALLOC(MTYPE_TMP, (pnt - str) + 1);
-		strncpy(cp, str, pnt - str);
+		memcpy(cp, str, pnt - str);
 		*(cp + (pnt - str)) = '\0';
 		ret = inet_pton(AF_INET6, cp, &p->prefix);
 		XFREE(MTYPE_TMP, cp);
@@ -1360,6 +1359,35 @@ const char *prefix2str(union prefixconstptr pu, char *str, int size)
 	return str;
 }
 
+void prefix_mcast_inet4_dump(const char *onfail, struct in_addr addr,
+		char *buf, int buf_size)
+{
+	int save_errno = errno;
+
+	if (addr.s_addr == INADDR_ANY)
+		strlcpy(buf, "*", buf_size);
+	else {
+		if (!inet_ntop(AF_INET, &addr, buf, buf_size)) {
+			if (onfail)
+				snprintf(buf, buf_size, "%s", onfail);
+		}
+	}
+
+	errno = save_errno;
+}
+
+const char *prefix_sg2str(const struct prefix_sg *sg, char *sg_str)
+{
+	char src_str[INET_ADDRSTRLEN];
+	char grp_str[INET_ADDRSTRLEN];
+
+	prefix_mcast_inet4_dump("<src?>", sg->src, src_str, sizeof(src_str));
+	prefix_mcast_inet4_dump("<grp?>", sg->grp, grp_str, sizeof(grp_str));
+	snprintf(sg_str, PREFIX_SG_STR_LEN, "(%s,%s)", src_str, grp_str);
+
+	return sg_str;
+}
+
 struct prefix *prefix_new(void)
 {
 	struct prefix *p;
@@ -1503,8 +1531,7 @@ char *prefix_mac2str(const struct ethaddr *mac, char *buf, int size)
 	if (!mac)
 		return NULL;
 	if (!buf)
-		ptr = (char *)XMALLOC(MTYPE_TMP,
-				      ETHER_ADDR_STRLEN * sizeof(char));
+		ptr = XMALLOC(MTYPE_TMP, ETHER_ADDR_STRLEN * sizeof(char));
 	else {
 		assert(size >= ETHER_ADDR_STRLEN);
 		ptr = buf;
@@ -1516,7 +1543,7 @@ char *prefix_mac2str(const struct ethaddr *mac, char *buf, int size)
 	return ptr;
 }
 
-unsigned prefix_hash_key(void *pp)
+unsigned prefix_hash_key(const void *pp)
 {
 	struct prefix copy;
 
@@ -1585,8 +1612,7 @@ char *esi_to_str(const esi_t *esi, char *buf, int size)
 	if (!esi)
 		return NULL;
 	if (!buf)
-		ptr = (char *)XMALLOC(MTYPE_TMP,
-				      ESI_STR_LEN * sizeof(char));
+		ptr = XMALLOC(MTYPE_TMP, ESI_STR_LEN * sizeof(char));
 	else {
 		assert(size >= ESI_STR_LEN);
 		ptr = buf;
